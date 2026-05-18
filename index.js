@@ -1,4 +1,6 @@
 const canvas = document.getElementById('canvas');
+const buoyancySlider = document.getElementById('buoyancy');
+const buoyancyValue = document.getElementById('buoyancy-value');
 
 const width = canvas.width;
 const height = canvas.height;
@@ -22,40 +24,64 @@ loadFile('shaders/utils.glsl').then((utils) => {
   THREE.ShaderChunk['utils'] = utils;
 
   // Create Renderer
-  const camera = new THREE.PerspectiveCamera(75, width / height, 0.01, 100);
-  camera.position.set(0.426, 0.677, -2.095);
-  camera.rotation.set(2.828, 0.191, 3.108);
+  const camera = new THREE.PerspectiveCamera(45, width / height, 0.01, 100);
+  const cameraTarget = new THREE.Vector3(0, -0.12, 0);
+  const cameraOffset = new THREE.Vector3();
+  const cameraSpherical = new THREE.Spherical();
+  camera.position.set(0, 1.15, -3.35);
+  camera.lookAt(cameraTarget);
+  cameraSpherical.setFromVector3(camera.position.clone().sub(cameraTarget));
+
+  function updateCameraFromOrbit() {
+    cameraOffset.setFromSpherical(cameraSpherical);
+    camera.position.copy(cameraTarget).add(cameraOffset);
+    camera.lookAt(cameraTarget);
+  }
 
   const renderer = new THREE.WebGLRenderer({canvas: canvas, antialias: true, alpha: true});
   renderer.setSize(width, height);
   renderer.autoClear = false;
 
+  const objectScene = new THREE.Scene();
+
   // Light direction
   const light = [0.7559289460184544, 0.7559289460184544, -0.3779644730092272];
 
-  // Create mouse Controls
-  const controls = new THREE.TrackballControls(
-    camera,
-    canvas
-  );
-
-  controls.screen.width = width;
-  controls.screen.height = height;
-
-  controls.rotateSpeed = 2.5;
-  controls.zoomSpeed = 1.2;
-  controls.panSpeed = 0.9;
-  controls.dynamicDampingFactor = 0.9;
+  const objectAmbient = new THREE.AmbientLight(0xffffff, 0.35);
+  const objectLight = new THREE.DirectionalLight(0xffffff, 0.9);
+  objectLight.position.set(light[0], light[1], light[2]);
+  objectScene.add(objectAmbient);
+  objectScene.add(objectLight);
 
   // Ray caster
   const raycaster = new THREE.Raycaster();
   const mouse = new THREE.Vector2();
+  let isDraggingSphere = false;
+  let isRotatingPool = false;
+  let previousMouseX = 0;
+  let previousMouseY = 0;
+
   const targetgeometry = new THREE.PlaneGeometry(2, 2);
   for (let vertex of targetgeometry.vertices) {
     vertex.z = - vertex.y;
     vertex.y = 0.;
   }
   const targetmesh = new THREE.Mesh(targetgeometry);
+
+  function updateMouse(event) {
+    const rect = canvas.getBoundingClientRect();
+
+    mouse.x = (event.clientX - rect.left) * 2 / rect.width - 1;
+    mouse.y = - (event.clientY - rect.top) * 2 / rect.height + 1;
+  }
+
+  function getPointerWaterPoint(event) {
+    updateMouse(event);
+    raycaster.setFromCamera(mouse, camera);
+
+    const intersects = raycaster.intersectObject(targetmesh);
+    return intersects.length > 0 ? intersects[0].point : null;
+  }
 
   // Textures
   const cubetextureloader = new THREE.CubeTextureLoader();
@@ -103,7 +129,7 @@ loadFile('shaders/utils.glsl').then((utils) => {
 
         const normalMaterial = new THREE.RawShaderMaterial({
           uniforms: {
-              delta: { value: [1 / 256, 1 / 256] },  // TODO: Remove this useless uniform and hardcode it in shaders?
+              delta: { value: [1 / 256, 1 / 256] },
               texture: { value: null },
           },
           vertexShader: vertexShader,
@@ -112,7 +138,7 @@ loadFile('shaders/utils.glsl').then((utils) => {
 
         const updateMaterial = new THREE.RawShaderMaterial({
           uniforms: {
-              delta: { value: [1 / 256, 1 / 256] },  // TODO: Remove this useless uniform and hardcode it in shaders?
+              delta: { value: [1 / 256, 1 / 256] },
               texture: { value: null },
           },
           vertexShader: vertexShader,
@@ -140,6 +166,19 @@ loadFile('shaders/utils.glsl').then((utils) => {
 
     updateNormals(renderer) {
       this._render(renderer, this._normalMesh);
+    }
+
+    getHeightAt(renderer, x, z) {
+      const pixel = new Float32Array(4);
+      const px = Math.min(255, Math.max(0, Math.floor((x * 0.5 + 0.5) * 256)));
+      const py = Math.min(255, Math.max(0, Math.floor((z * 0.5 + 0.5) * 256)));
+
+      try {
+        renderer.readRenderTargetPixels(this.texture, px, py, 1, 1, pixel);
+        return pixel[0];
+      } catch (error) {
+        return 0;
+      }
     }
 
     _render(renderer, mesh) {
@@ -226,6 +265,8 @@ loadFile('shaders/utils.glsl').then((utils) => {
           },
           vertexShader: vertexShader,
           fragmentShader: fragmentShader,
+          transparent: true,
+          depthWrite: false,
         });
 
         this.mesh = new THREE.Mesh(this.geometry, this.material);
@@ -253,42 +294,14 @@ loadFile('shaders/utils.glsl').then((utils) => {
     constructor() {
       this._geometry = new THREE.BufferGeometry();
       const vertices = new Float32Array([
-        -1, -1, -1,
-        -1, -1, 1,
-        -1, 1, -1,
-        -1, 1, 1,
-        1, -1, -1,
-        1, 1, -1,
-        1, -1, 1,
-        1, 1, 1,
-        -1, -1, -1,
-        1, -1, -1,
-        -1, -1, 1,
-        1, -1, 1,
         -1, 1, -1,
         -1, 1, 1,
         1, 1, -1,
-        1, 1, 1,
-        -1, -1, -1,
-        -1, 1, -1,
-        1, -1, -1,
-        1, 1, -1,
-        -1, -1, 1,
-        1, -1, 1,
-        -1, 1, 1,
         1, 1, 1
       ]);
       const indices = new Uint32Array([
         0, 1, 2,
-        2, 1, 3,
-        4, 5, 6,
-        6, 5, 7,
-        12, 13, 14,
-        14, 13, 15,
-        16, 17, 18,
-        18, 17, 19,
-        20, 21, 22,
-        22, 21, 23
+        2, 1, 3
       ]);
 
       this._geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
@@ -322,6 +335,210 @@ loadFile('shaders/utils.glsl').then((utils) => {
       this._material.uniforms['causticTex'].value = causticsTexture;
 
       renderer.render(this._mesh, camera);
+    }
+
+  }
+
+
+  class WaterVolume {
+
+    constructor() {
+      this._geometry = new THREE.BufferGeometry();
+
+      const vertices = new Float32Array([
+        -1, -1, -1,
+        -1, 0, -1,
+        1, -1, -1,
+        1, 0, -1,
+        1, -1, -1,
+        1, 0, -1,
+        1, -1, 1,
+        1, 0, 1,
+        1, -1, 1,
+        1, 0, 1,
+        -1, -1, 1,
+        -1, 0, 1,
+        -1, -1, 1,
+        -1, 0, 1,
+        -1, -1, -1,
+        -1, 0, -1
+      ]);
+      const indices = new Uint16Array([
+        0, 1, 2,
+        2, 1, 3,
+        4, 5, 6,
+        6, 5, 7,
+        8, 9, 10,
+        10, 9, 11,
+        12, 13, 14,
+        14, 13, 15
+      ]);
+
+      this._geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
+      this._geometry.setIndex(new THREE.BufferAttribute(indices, 1));
+
+      this._material = new THREE.MeshPhongMaterial({
+        color: 0x2aa8d8,
+        transparent: true,
+        opacity: 0.22,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      });
+
+      this._mesh = new THREE.Mesh(this._geometry, this._material);
+    }
+
+    draw(renderer) {
+      renderer.render(this._mesh, camera);
+    }
+
+  }
+
+
+  class FloatingSphere {
+
+    constructor() {
+      this.radius = 0.14;
+      this.buoyancy = Number(buoyancySlider.value);
+      this.velocity = 0;
+      this.waterLevel = 0;
+      this.floorLevel = -1 + this.radius;
+      this.sphereShader = null;
+
+      const geometry = new THREE.SphereBufferGeometry(this.radius, 48, 24);
+      const material = new THREE.MeshPhongMaterial({
+        color: 0xff6b35,
+        shininess: 45,
+        specular: 0x442211,
+      });
+      material.onBeforeCompile = (shader) => {
+        shader.uniforms.waterLevel = { value: this.waterLevel };
+        this.sphereShader = shader;
+
+        shader.vertexShader = shader.vertexShader.replace(
+          '#include <common>',
+          '#include <common>\nvarying vec3 vWorldPosition;'
+        );
+        shader.vertexShader = shader.vertexShader.replace(
+          '#include <begin_vertex>',
+          '#include <begin_vertex>\nvec4 sphereWorldPosition = modelMatrix * vec4(transformed, 1.0);\nvWorldPosition = sphereWorldPosition.xyz;'
+        );
+        shader.fragmentShader = shader.fragmentShader.replace(
+          '#include <common>',
+          '#include <common>\nuniform float waterLevel;\nvarying vec3 vWorldPosition;'
+        );
+        shader.fragmentShader = shader.fragmentShader.replace(
+          '#include <color_fragment>',
+          [
+            '#include <color_fragment>',
+            'float submerged = smoothstep(waterLevel + 0.015, waterLevel - 0.015, vWorldPosition.y);',
+            'diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.03, 0.42, 0.62), submerged);',
+            'diffuseColor.rgb *= mix(1.0, 0.72, submerged);'
+          ].join('\n')
+        );
+      };
+
+      this.mesh = new THREE.Mesh(geometry, material);
+      this.mesh.position.set(-0.5, this.radius * 0.25, 0.15);
+      objectScene.add(this.mesh);
+
+      const waterlineGeometry = new THREE.TorusBufferGeometry(1, 0.006, 8, 72);
+      const waterlineMaterial = new THREE.MeshBasicMaterial({
+        color: 0xd7f8ff,
+        transparent: true,
+        opacity: 0.85,
+      });
+      this.waterline = new THREE.Mesh(waterlineGeometry, waterlineMaterial);
+      this.waterline.rotation.x = Math.PI / 2;
+      this.waterline.visible = false;
+      objectScene.add(this.waterline);
+
+      const shadowGeometry = new THREE.CircleBufferGeometry(this.radius * 1.15, 48);
+      const shadowMaterial = new THREE.MeshBasicMaterial({
+        color: 0x000000,
+        transparent: true,
+        opacity: 0.22,
+        depthWrite: false,
+      });
+      this.shadow = new THREE.Mesh(shadowGeometry, shadowMaterial);
+      this.shadow.rotation.x = -Math.PI / 2;
+      this.shadow.position.set(this.mesh.position.x, 0.004, this.mesh.position.z);
+      objectScene.add(this.shadow);
+    }
+
+    setBuoyancy(value) {
+      this.buoyancy = value;
+    }
+
+    clampToPool() {
+      this.mesh.position.x = Math.min(0.95, Math.max(-0.95, this.mesh.position.x));
+      this.mesh.position.z = Math.min(0.95, Math.max(-0.95, this.mesh.position.z));
+      this.mesh.updateMatrixWorld();
+    }
+
+    moveToWaterPoint(point) {
+      this.mesh.position.x = point.x;
+      this.mesh.position.z = point.z;
+      this.clampToPool();
+    }
+
+    update(waterLevel) {
+      this.waterLevel = waterLevel;
+
+      const bottom = this.mesh.position.y - this.radius;
+      const submergedDepth = Math.min(Math.max(this.waterLevel - bottom, 0), this.radius * 2);
+      const submergedRatio = submergedDepth / (this.radius * 2);
+      const gravity = -0.0035;
+      const buoyancyForce = this.buoyancy * submergedRatio * 0.007;
+
+      this.velocity += gravity + buoyancyForce;
+      this.velocity *= 0.985;
+      this.mesh.position.y += this.velocity;
+
+      if (this.mesh.position.y < this.floorLevel) {
+        this.mesh.position.y = this.floorLevel;
+        this.velocity = Math.max(0, this.velocity * -0.2);
+      }
+
+      const maxHeight = this.waterLevel + this.radius * 1.2;
+      if (this.mesh.position.y > maxHeight) {
+        this.mesh.position.y = maxHeight;
+        this.velocity = Math.min(0, this.velocity);
+      }
+
+      this.clampToPool();
+      this.updateShadow();
+      this.updateWaterline();
+    }
+
+    updateShadow() {
+      const heightAboveWater = Math.max(0, this.mesh.position.y - this.waterLevel);
+      const scale = Math.max(0.35, 1.15 - heightAboveWater * 1.8);
+
+      this.shadow.position.x = this.mesh.position.x;
+      this.shadow.position.z = this.mesh.position.z;
+      this.shadow.scale.set(scale, scale, 1);
+      this.shadow.material.opacity = Math.max(0.04, 0.24 - heightAboveWater * 0.3);
+    }
+
+    updateWaterline() {
+      if (this.sphereShader) {
+        this.sphereShader.uniforms.waterLevel.value = this.waterLevel;
+      }
+
+      const waterOffset = this.waterLevel - this.mesh.position.y;
+      const intersectsWater = Math.abs(waterOffset) < this.radius;
+
+      this.waterline.visible = intersectsWater;
+      if (!intersectsWater) return;
+
+      const ringRadius = Math.sqrt(this.radius * this.radius - waterOffset * waterOffset);
+      this.waterline.position.set(this.mesh.position.x, this.waterLevel + 0.002, this.mesh.position.z);
+      this.waterline.scale.set(ringRadius, ringRadius, 1);
+    }
+
+    draw(renderer) {
+      renderer.render(objectScene, camera);
     }
 
   }
@@ -365,14 +582,27 @@ loadFile('shaders/utils.glsl').then((utils) => {
   const water = new Water();
   const caustics = new Caustics(water.geometry);
   const pool = new Pool();
+  const waterVolume = new WaterVolume();
+  const floatingSphere = new FloatingSphere();
 
   const debug = new Debug();
+
+  buoyancySlider.addEventListener('input', () => {
+    const value = Number(buoyancySlider.value);
+    buoyancyValue.textContent = value.toFixed(2);
+    floatingSphere.setBuoyancy(value);
+  });
 
 
   // Main rendering loop
   function animate() {
     waterSimulation.stepSimulation(renderer);
     waterSimulation.updateNormals(renderer);
+    floatingSphere.update(waterSimulation.getHeightAt(
+      renderer,
+      floatingSphere.mesh.position.x,
+      floatingSphere.mesh.position.z
+    ));
 
     const waterTexture = waterSimulation.texture.texture;
 
@@ -386,41 +616,81 @@ loadFile('shaders/utils.glsl').then((utils) => {
     renderer.setClearColor(white, 1);
     renderer.clear();
 
-    water.draw(renderer, waterTexture, causticsTexture);
     pool.draw(renderer, waterTexture, causticsTexture);
-
-    controls.update();
+    floatingSphere.draw(renderer);
+    waterVolume.draw(renderer);
+    water.draw(renderer, waterTexture, causticsTexture);
 
     window.requestAnimationFrame(animate);
   }
 
   function onMouseMove(event) {
-    const rect = canvas.getBoundingClientRect();
+    if (isRotatingPool) {
+      const dx = event.clientX - previousMouseX;
+      const dy = event.clientY - previousMouseY;
 
-    mouse.x = (event.clientX - rect.left) * 2 / width - 1;
-    mouse.y = - (event.clientY - rect.top) * 2 / height + 1;
+      previousMouseX = event.clientX;
+      previousMouseY = event.clientY;
 
-    raycaster.setFromCamera(mouse, camera);
-
-    const intersects = raycaster.intersectObject(targetmesh);
-
-    for (let intersect of intersects) {
-      waterSimulation.addDrop(renderer, intersect.point.x, intersect.point.z, 0.03, 0.04);
+      cameraSpherical.theta -= dx * 0.006;
+      cameraSpherical.phi = Math.min(
+        Math.PI * 0.47,
+        Math.max(Math.PI * 0.12, cameraSpherical.phi - dy * 0.006)
+      );
+      updateCameraFromOrbit();
+      return;
     }
+
+    if (!isDraggingSphere) return;
+
+    const point = getPointerWaterPoint(event);
+    if (!point) return;
+
+    floatingSphere.moveToWaterPoint(point);
+    waterSimulation.addDrop(renderer, floatingSphere.mesh.position.x, floatingSphere.mesh.position.z, 0.03, 0.04);
+  }
+
+  function onMouseDown(event) {
+    if (event.button === 2) {
+      event.preventDefault();
+      isRotatingPool = true;
+      previousMouseX = event.clientX;
+      previousMouseY = event.clientY;
+      return;
+    }
+
+    if (event.button !== 0) return;
+
+    const point = getPointerWaterPoint(event);
+    if (!point) return;
+
+    event.preventDefault();
+    isDraggingSphere = true;
+    floatingSphere.moveToWaterPoint(point);
+    waterSimulation.addDrop(renderer, floatingSphere.mesh.position.x, floatingSphere.mesh.position.z, 0.03, 0.04);
+  }
+
+  function onMouseUp(event) {
+    if (event.button === 2) {
+      isRotatingPool = false;
+    }
+
+    if (event.button === 0) {
+      isDraggingSphere = false;
+    }
+  }
+
+  function onContextMenu(event) {
+    event.preventDefault();
   }
 
   const loaded = [waterSimulation.loaded, caustics.loaded, water.loaded, pool.loaded, debug.loaded];
 
   Promise.all(loaded).then(() => {
     canvas.addEventListener('mousemove', { handleEvent: onMouseMove });
-
-    for (var i = 0; i < 20; i++) {
-      waterSimulation.addDrop(
-        renderer,
-        Math.random() * 2 - 1, Math.random() * 2 - 1,
-        0.03, (i & 1) ? 0.02 : -0.02
-      );
-    }
+    canvas.addEventListener('mousedown', { handleEvent: onMouseDown });
+    window.addEventListener('mouseup', { handleEvent: onMouseUp });
+    canvas.addEventListener('contextmenu', { handleEvent: onContextMenu });
 
     animate();
   });
