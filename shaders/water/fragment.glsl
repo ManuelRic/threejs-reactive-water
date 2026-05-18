@@ -55,7 +55,7 @@ void main() {
     vec3 reflectedColor = getSurfaceRayColor(pos, reflectedRay, underwaterColor);
     vec3 refractedColor = getSurfaceRayColor(pos, refractedRay, vec3(1.0)) * vec3(0.8, 1.0, 1.1);
 
-    gl_FragColor = vec4(mix(reflectedColor, refractedColor, (1.0 - fresnel) * length(refractedRay)), 0.55);
+    gl_FragColor = vec4(mix(reflectedColor, refractedColor, (1.0 - fresnel) * length(refractedRay)), 1.0);
   } else {
     vec3 reflectedRay = reflect(incomingRay, normal);
     vec3 refractedRay = refract(incomingRay, normal, IOR_AIR / IOR_WATER);
@@ -64,6 +64,6 @@ void main() {
     vec3 reflectedColor = getSurfaceRayColor(pos, reflectedRay, abovewaterColor);
     vec3 refractedColor = getSurfaceRayColor(pos, refractedRay, abovewaterColor);
 
-    gl_FragColor = vec4(mix(refractedColor, reflectedColor, fresnel), 0.55);
+    gl_FragColor = vec4(mix(refractedColor, reflectedColor, fresnel), 1.0);
   }
 }

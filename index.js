@@ -1,6 +1,4 @@
 const canvas = document.getElementById('canvas');
-const buoyancySlider = document.getElementById('buoyancy');
-const buoyancyValue = document.getElementById('buoyancy-value');
 
 const width = canvas.width;
 const height = canvas.height;
@@ -24,64 +22,40 @@ loadFile('shaders/utils.glsl').then((utils) => {
   THREE.ShaderChunk['utils'] = utils;
 
   // Create Renderer
-  const camera = new THREE.PerspectiveCamera(45, width / height, 0.01, 100);
-  const cameraTarget = new THREE.Vector3(0, -0.12, 0);
-  const cameraOffset = new THREE.Vector3();
-  const cameraSpherical = new THREE.Spherical();
-  camera.position.set(0, 1.15, -3.35);
-  camera.lookAt(cameraTarget);
-  cameraSpherical.setFromVector3(camera.position.clone().sub(cameraTarget));
-
-  function updateCameraFromOrbit() {
-    cameraOffset.setFromSpherical(cameraSpherical);
-    camera.position.copy(cameraTarget).add(cameraOffset);
-    camera.lookAt(cameraTarget);
-  }
+  const camera = new THREE.PerspectiveCamera(75, width / height, 0.01, 100);
+  camera.position.set(0.426, 0.677, -2.095);
+  camera.rotation.set(2.828, 0.191, 3.108);
 
   const renderer = new THREE.WebGLRenderer({canvas: canvas, antialias: true, alpha: true});
   renderer.setSize(width, height);
   renderer.autoClear = false;
 
-  const objectScene = new THREE.Scene();
-
   // Light direction
   const light = [0.7559289460184544, 0.7559289460184544, -0.3779644730092272];
 
-  const objectAmbient = new THREE.AmbientLight(0xffffff, 0.35);
-  const objectLight = new THREE.DirectionalLight(0xffffff, 0.9);
-  objectLight.position.set(light[0], light[1], light[2]);
-  objectScene.add(objectAmbient);
-  objectScene.add(objectLight);
+  // Create mouse Controls
+  const controls = new THREE.TrackballControls(
+    camera,
+    canvas
+  );
+
+  controls.screen.width = width;
+  controls.screen.height = height;
+
+  controls.rotateSpeed = 2.5;
+  controls.zoomSpeed = 1.2;
+  controls.panSpeed = 0.9;
+  controls.dynamicDampingFactor = 0.9;
 
   // Ray caster
   const raycaster = new THREE.Raycaster();
   const mouse = new THREE.Vector2();
-  let isDraggingSphere = false;
-  let isRotatingPool = false;
-  let previousMouseX = 0;
-  let previousMouseY = 0;
-
   const targetgeometry = new THREE.PlaneGeometry(2, 2);
   for (let vertex of targetgeometry.vertices) {
     vertex.z = - vertex.y;
     vertex.y = 0.;
   }
   const targetmesh = new THREE.Mesh(targetgeometry);
-
-  function updateMouse(event) {
-    const rect = canvas.getBoundingClientRect();
-
-    mouse.x = (event.clientX - rect.left) * 2 / rect.width - 1;
-    mouse.y = - (event.clientY - rect.top) * 2 / rect.height + 1;
-  }
-
-  function getPointerWaterPoint(event) {
-    updateMouse(event);
-    raycaster.setFromCamera(mouse, camera);
-
-    const intersects = raycaster.intersectObject(targetmesh);
-    return intersects.length > 0 ? intersects[0].point : null;
-  }
 
   // Textures
   const cubetextureloader = new THREE.CubeTextureLoader();
@@ -168,19 +142,6 @@ loadFile('shaders/utils.glsl').then((utils) => {
       this._render(renderer, this._normalMesh);
     }
 
-    getHeightAt(renderer, x, z) {
-      const pixel = new Float32Array(4);
-      const px = Math.min(255, Math.max(0, Math.floor((x * 0.5 + 0.5) * 256)));
-      const py = Math.min(255, Math.max(0, Math.floor((z * 0.5 + 0.5) * 256)));
-
-      try {
-        renderer.readRenderTargetPixels(this.texture, px, py, 1, 1, pixel);
-        return pixel[0];
-      } catch (error) {
-        return 0;
-      }
-    }
-
     _render(renderer, mesh) {
       // Swap textures
       const oldTexture = this.texture;
@@ -265,8 +226,6 @@ loadFile('shaders/utils.glsl').then((utils) => {
           },
           vertexShader: vertexShader,
           fragmentShader: fragmentShader,
-          transparent: true,
-          depthWrite: false,
         });
 
         this.mesh = new THREE.Mesh(this.geometry, this.material);
@@ -368,100 +327,6 @@ loadFile('shaders/utils.glsl').then((utils) => {
   }
 
 
-  class FloatingSphere {
-
-    constructor() {
-      this.radius = 0.14;
-      this.buoyancy = Number(buoyancySlider.value);
-      this.velocity = 0;
-      this.waterLevel = 0;
-      this.floorLevel = -1 + this.radius;
-
-      const geometry = new THREE.SphereBufferGeometry(this.radius, 48, 24);
-      const material = new THREE.MeshPhongMaterial({
-        color: 0xff6b35,
-        shininess: 45,
-        specular: 0x442211,
-      });
-
-      this.mesh = new THREE.Mesh(geometry, material);
-      this.mesh.position.set(-0.5, this.radius * 0.25, 0.15);
-      objectScene.add(this.mesh);
-
-      const shadowGeometry = new THREE.CircleBufferGeometry(this.radius * 1.15, 48);
-      const shadowMaterial = new THREE.MeshBasicMaterial({
-        color: 0x000000,
-        transparent: true,
-        opacity: 0.22,
-        depthWrite: false,
-      });
-      this.shadow = new THREE.Mesh(shadowGeometry, shadowMaterial);
-      this.shadow.rotation.x = -Math.PI / 2;
-      this.shadow.position.set(this.mesh.position.x, 0.004, this.mesh.position.z);
-      objectScene.add(this.shadow);
-    }
-
-    setBuoyancy(value) {
-      this.buoyancy = value;
-    }
-
-    clampToPool() {
-      this.mesh.position.x = Math.min(0.95, Math.max(-0.95, this.mesh.position.x));
-      this.mesh.position.z = Math.min(0.95, Math.max(-0.95, this.mesh.position.z));
-      this.mesh.updateMatrixWorld();
-    }
-
-    moveToWaterPoint(point) {
-      this.mesh.position.x = point.x;
-      this.mesh.position.z = point.z;
-      this.clampToPool();
-    }
-
-    update(waterLevel) {
-      this.waterLevel = waterLevel;
-
-      const bottom = this.mesh.position.y - this.radius;
-      const submergedDepth = Math.min(Math.max(this.waterLevel - bottom, 0), this.radius * 2);
-      const submergedRatio = submergedDepth / (this.radius * 2);
-      const gravity = -0.0035;
-      const buoyancyForce = this.buoyancy * submergedRatio * 0.007;
-
-      this.velocity += gravity + buoyancyForce;
-      this.velocity *= 0.985;
-      this.mesh.position.y += this.velocity;
-
-      if (this.mesh.position.y < this.floorLevel) {
-        this.mesh.position.y = this.floorLevel;
-        this.velocity = Math.max(0, this.velocity * -0.2);
-      }
-
-      const maxHeight = this.waterLevel + this.radius * 1.2;
-      if (this.mesh.position.y > maxHeight) {
-        this.mesh.position.y = maxHeight;
-        this.velocity = Math.min(0, this.velocity);
-      }
-
-      this.updateShadow();
-      this.clampToPool();
-    }
-
-    updateShadow() {
-      const heightAboveWater = Math.max(0, this.mesh.position.y - this.waterLevel);
-      const scale = Math.max(0.35, 1.15 - heightAboveWater * 1.8);
-
-      this.shadow.position.x = this.mesh.position.x;
-      this.shadow.position.z = this.mesh.position.z;
-      this.shadow.scale.set(scale, scale, 1);
-      this.shadow.material.opacity = Math.max(0.04, 0.24 - heightAboveWater * 0.3);
-    }
-
-    draw(renderer) {
-      renderer.render(objectScene, camera);
-    }
-
-  }
-
-
   class Debug {
 
     constructor() {
@@ -500,26 +365,14 @@ loadFile('shaders/utils.glsl').then((utils) => {
   const water = new Water();
   const caustics = new Caustics(water.geometry);
   const pool = new Pool();
-  const floatingSphere = new FloatingSphere();
 
   const debug = new Debug();
-
-  buoyancySlider.addEventListener('input', () => {
-    const value = Number(buoyancySlider.value);
-    buoyancyValue.textContent = value.toFixed(2);
-    floatingSphere.setBuoyancy(value);
-  });
 
 
   // Main rendering loop
   function animate() {
     waterSimulation.stepSimulation(renderer);
     waterSimulation.updateNormals(renderer);
-    floatingSphere.update(waterSimulation.getHeightAt(
-      renderer,
-      floatingSphere.mesh.position.x,
-      floatingSphere.mesh.position.z
-    ));
 
     const waterTexture = waterSimulation.texture.texture;
 
@@ -533,80 +386,41 @@ loadFile('shaders/utils.glsl').then((utils) => {
     renderer.setClearColor(white, 1);
     renderer.clear();
 
-    pool.draw(renderer, waterTexture, causticsTexture);
-    floatingSphere.draw(renderer);
     water.draw(renderer, waterTexture, causticsTexture);
+    pool.draw(renderer, waterTexture, causticsTexture);
+
+    controls.update();
 
     window.requestAnimationFrame(animate);
   }
 
   function onMouseMove(event) {
-    if (isRotatingPool) {
-      const dx = event.clientX - previousMouseX;
-      const dy = event.clientY - previousMouseY;
+    const rect = canvas.getBoundingClientRect();
 
-      previousMouseX = event.clientX;
-      previousMouseY = event.clientY;
+    mouse.x = (event.clientX - rect.left) * 2 / width - 1;
+    mouse.y = - (event.clientY - rect.top) * 2 / height + 1;
 
-      cameraSpherical.theta -= dx * 0.006;
-      cameraSpherical.phi = Math.min(
-        Math.PI * 0.47,
-        Math.max(Math.PI * 0.12, cameraSpherical.phi - dy * 0.006)
-      );
-      updateCameraFromOrbit();
-      return;
+    raycaster.setFromCamera(mouse, camera);
+
+    const intersects = raycaster.intersectObject(targetmesh);
+
+    for (let intersect of intersects) {
+      waterSimulation.addDrop(renderer, intersect.point.x, intersect.point.z, 0.03, 0.04);
     }
-
-    if (!isDraggingSphere) return;
-
-    const point = getPointerWaterPoint(event);
-    if (!point) return;
-
-    floatingSphere.moveToWaterPoint(point);
-    waterSimulation.addDrop(renderer, floatingSphere.mesh.position.x, floatingSphere.mesh.position.z, 0.03, 0.04);
-  }
-
-  function onMouseDown(event) {
-    if (event.button === 2) {
-      event.preventDefault();
-      isRotatingPool = true;
-      previousMouseX = event.clientX;
-      previousMouseY = event.clientY;
-      return;
-    }
-
-    if (event.button !== 0) return;
-
-    const point = getPointerWaterPoint(event);
-    if (!point) return;
-
-    event.preventDefault();
-    isDraggingSphere = true;
-    floatingSphere.moveToWaterPoint(point);
-    waterSimulation.addDrop(renderer, floatingSphere.mesh.position.x, floatingSphere.mesh.position.z, 0.03, 0.04);
-  }
-
-  function onMouseUp(event) {
-    if (event.button === 2) {
-      isRotatingPool = false;
-    }
-
-    if (event.button === 0) {
-      isDraggingSphere = false;
-    }
-  }
-
-  function onContextMenu(event) {
-    event.preventDefault();
   }
 
   const loaded = [waterSimulation.loaded, caustics.loaded, water.loaded, pool.loaded, debug.loaded];
 
   Promise.all(loaded).then(() => {
     canvas.addEventListener('mousemove', { handleEvent: onMouseMove });
-    canvas.addEventListener('mousedown', { handleEvent: onMouseDown });
-    window.addEventListener('mouseup', { handleEvent: onMouseUp });
-    canvas.addEventListener('contextmenu', { handleEvent: onContextMenu });
+
+    for (var i = 0; i < 20; i++) {
+      waterSimulation.addDrop(
+        renderer,
+        Math.random() * 2 - 1, Math.random() * 2 - 1,
+        0.03, (i & 1) ? 0.02 : -0.02
+      );
+    }
 
     animate();
   });
