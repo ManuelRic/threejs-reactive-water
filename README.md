@@ -1,5 +1,5 @@
 # ThreeJS-water
-
+Based on Martin Renou repo, worked on top of it.
 Try it live: https://martinrenou.github.io/threejs-water
 
 This is an implementation of [Evan Wallace's webgl-water demo](http://madebyevan.com/webgl-water) using [ThreeJS](http://threejs.org).
