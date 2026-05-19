@@ -1,9 +1,27 @@
 const canvas = document.getElementById('canvas');
 const buoyancySlider = document.getElementById('buoyancy');
 const buoyancyValue = document.getElementById('buoyancy-value');
+const toggleSphereButton = document.getElementById('toggle-sphere');
+const toggleShipButton = document.getElementById('toggle-ship');
 
 const width = canvas.width;
 const height = canvas.height;
+
+// Lower values make wake waves fade sooner. Higher values let them travel farther.
+const rippleDistance = 0.92;
+const wakeHeightRecovery = 0.992;
+const oceanWaveStrength = 0.035;
+const wakeWaveStrength = 0.75;
+const foamHeightThreshold = 0.018;
+const foamHeightSoftness = 0.035;
+const foamFromHeightStrength = 1.25;
+const wakeDropCount = 5;
+const wakeTrailSpacing = 0.055;
+const wakeSpread = 0.72;
+const wakeStrength = 0.04;
+const wakeTroughStrength = -0.018;
+const wakeMinMovement = 0.006;
+const shipModelYawOffset = 0;
 
 // Colors
 const black = new THREE.Color('black');
@@ -139,6 +157,8 @@ loadFile('shaders/utils.glsl').then((utils) => {
         const updateMaterial = new THREE.RawShaderMaterial({
           uniforms: {
               delta: { value: [1 / 256, 1 / 256] },
+              rippleDistance: { value: rippleDistance },
+              wakeHeightRecovery: { value: wakeHeightRecovery },
               texture: { value: null },
           },
           vertexShader: vertexShader,
@@ -261,6 +281,12 @@ loadFile('shaders/utils.glsl').then((utils) => {
               sky: { value: textureCube },
               water: { value: null },
               causticTex: { value: null },
+              time: { value: 0 },
+              oceanWaveStrength: { value: oceanWaveStrength },
+              wakeWaveStrength: { value: wakeWaveStrength },
+              foamHeightThreshold: { value: foamHeightThreshold },
+              foamHeightSoftness: { value: foamHeightSoftness },
+              foamFromHeightStrength: { value: foamFromHeightStrength },
               underwater: { value: false },
           },
           vertexShader: vertexShader,
@@ -273,9 +299,10 @@ loadFile('shaders/utils.glsl').then((utils) => {
       });
     }
 
-    draw(renderer, waterTexture, causticsTexture) {
+    draw(renderer, waterTexture, causticsTexture, time) {
       this.material.uniforms['water'].value = waterTexture;
       this.material.uniforms['causticTex'].value = causticsTexture;
+      this.material.uniforms['time'].value = time;
 
       this.material.side = THREE.FrontSide;
       this.material.uniforms['underwater'].value = true;
@@ -395,10 +422,11 @@ loadFile('shaders/utils.glsl').then((utils) => {
   }
 
 
-  class FloatingSphere {
+class FloatingSphere {
 
     constructor() {
-      this.radius = 0.14;
+      this.radius = 0.09;
+      this.visible = true;
       this.buoyancy = Number(buoyancySlider.value);
       this.velocity = 0;
       this.waterLevel = 0;
@@ -439,7 +467,7 @@ loadFile('shaders/utils.glsl').then((utils) => {
       };
 
       this.mesh = new THREE.Mesh(geometry, material);
-      this.mesh.position.set(-0.5, this.radius * 0.25, 0.15);
+      this.mesh.position.set(-0.5, this.radius * 0.25, 0.3);
       objectScene.add(this.mesh);
 
       const waterlineGeometry = new THREE.TorusBufferGeometry(1, 0.006, 8, 72);
@@ -464,6 +492,13 @@ loadFile('shaders/utils.glsl').then((utils) => {
       this.shadow.rotation.x = -Math.PI / 2;
       this.shadow.position.set(this.mesh.position.x, 0.004, this.mesh.position.z);
       objectScene.add(this.shadow);
+    }
+
+    setVisible(visible) {
+      this.visible = visible;
+      this.mesh.visible = visible;
+      this.shadow.visible = visible;
+      this.waterline.visible = false;
     }
 
     setBuoyancy(value) {
@@ -512,6 +547,12 @@ loadFile('shaders/utils.glsl').then((utils) => {
     }
 
     updateShadow() {
+      if (!this.visible) {
+        this.shadow.visible = false;
+        return;
+      }
+
+      this.shadow.visible = true;
       const heightAboveWater = Math.max(0, this.mesh.position.y - this.waterLevel);
       const scale = Math.max(0.35, 1.15 - heightAboveWater * 1.8);
 
@@ -522,6 +563,11 @@ loadFile('shaders/utils.glsl').then((utils) => {
     }
 
     updateWaterline() {
+      if (!this.visible) {
+        this.waterline.visible = false;
+        return;
+      }
+
       if (this.sphereShader) {
         this.sphereShader.uniforms.waterLevel.value = this.waterLevel;
       }
@@ -539,6 +585,95 @@ loadFile('shaders/utils.glsl').then((utils) => {
 
     draw(renderer) {
       renderer.render(objectScene, camera);
+    }
+
+  }
+
+
+  class CargoShip {
+
+    constructor() {
+      this.visible = true;
+      this.waterLevel = 0;
+      this.draft = 0.035;
+      this.targetYaw = 0;
+      this.group = new THREE.Group();
+      this.modelRoot = new THREE.Group();
+      this.group.add(this.modelRoot);
+      this.group.position.set(-0.5, 0, 0.15);
+      objectScene.add(this.group);
+
+      this.loaded = new Promise((resolve) => {
+        if (!THREE.GLTFLoader) {
+          console.error('THREE.GLTFLoader is not available.');
+          resolve();
+          return;
+        }
+
+        const loader = new THREE.GLTFLoader();
+        loader.load('models/pato_dorado.glb', (gltf) => {
+          const model = gltf.scene;
+          const originalBox = new THREE.Box3().setFromObject(model);
+          const originalSize = originalBox.getSize(new THREE.Vector3());
+          const maxDeckSize = Math.max(originalSize.x, originalSize.z);
+          const scale = 0.025;
+
+          model.scale.setScalar(scale);
+          this.modelRoot.add(model);
+
+          const box = new THREE.Box3().setFromObject(model);
+          const center = box.getCenter(new THREE.Vector3());
+          model.position.x -= center.x;
+          model.position.z -= center.z;
+          model.position.y -= box.min.y;
+          model.rotation.y = shipModelYawOffset;
+
+          model.traverse((child) => {
+            if (child.isMesh) {
+              child.castShadow = true;
+              child.receiveShadow = true;
+            }
+          });
+
+          this.update(0, 0);
+          resolve();
+        }, undefined, (error) => {
+          console.error('Could not load cargo_ship_01.glb', error);
+          resolve();
+        });
+      });
+    }
+
+    setVisible(visible) {
+      this.visible = visible;
+      this.group.visible = visible;
+    }
+
+    clampToPool() {
+      this.group.position.x = Math.min(0.9, Math.max(-0.9, this.group.position.x));
+      this.group.position.z = Math.min(0.9, Math.max(-0.9, this.group.position.z));
+      this.group.updateMatrixWorld();
+    }
+
+    moveToWaterPoint(point) {
+      const dx = point.x - this.group.position.x;
+      const dz = point.z - this.group.position.z;
+
+      if (Math.sqrt(dx * dx + dz * dz) > 0.004) {
+        this.targetYaw = Math.atan2(dx, dz);
+      }
+
+      this.group.position.x = point.x;
+      this.group.position.z = point.z;
+      this.clampToPool();
+    }
+
+    update(waterLevel, time) {
+      this.waterLevel = waterLevel;
+      this.group.position.y = waterLevel - this.draft + Math.sin(time * 2.0) * 0.004;
+      this.group.rotation.y += (this.targetYaw - this.group.rotation.y) * 0.18;
+      this.modelRoot.rotation.x = Math.sin(time * 1.35 + this.group.position.z * 4.0) * 0.025;
+      this.modelRoot.rotation.z = Math.sin(time * 1.6 + this.group.position.x * 3.0) * 0.018;
     }
 
   }
@@ -584,6 +719,9 @@ loadFile('shaders/utils.glsl').then((utils) => {
   const pool = new Pool();
   const waterVolume = new WaterVolume();
   const floatingSphere = new FloatingSphere();
+  const cargoShip = new CargoShip();
+  floatingSphere.setVisible(false);
+  let lastWakePoint = null;
 
   const debug = new Debug();
 
@@ -593,16 +731,61 @@ loadFile('shaders/utils.glsl').then((utils) => {
     floatingSphere.setBuoyancy(value);
   });
 
+  function setToggleButtonState(button, enabled) {
+    button.classList.toggle('is-info', enabled);
+    button.classList.toggle('is-light', !enabled);
+  }
+
+  toggleSphereButton.addEventListener('click', () => {
+    floatingSphere.setVisible(!floatingSphere.visible);
+    setToggleButtonState(toggleSphereButton, floatingSphere.visible);
+  });
+
+  toggleShipButton.addEventListener('click', () => {
+    cargoShip.setVisible(!cargoShip.visible);
+    setToggleButtonState(toggleShipButton, cargoShip.visible);
+  });
+
+  function hasVisibleVessel() {
+    return floatingSphere.visible || cargoShip.visible;
+  }
+
+  function oceanWave(pointX, pointZ, directionX, directionZ, frequency, speed, amplitude, time) {
+    const length = Math.sqrt(directionX * directionX + directionZ * directionZ);
+    const normalizedX = directionX / length;
+    const normalizedZ = directionZ / length;
+
+    return Math.sin((pointX * normalizedX + pointZ * normalizedZ) * frequency + time * speed) * amplitude;
+  }
+
+  function getOceanHeightAt(x, z, time) {
+    let height = 0;
+
+    height += oceanWave(x, z, 1, 0.35, 7, 1.3, 0.52, time);
+    height += oceanWave(x, z, -0.65, 1, 11, 1.9, 0.24, time);
+    height += oceanWave(x, z, 0.2, 1, 17, 2.7, 0.12, time);
+    height += oceanWave(x, z, -1, 0.1, 23, 3.4, 0.06, time);
+
+    return height * oceanWaveStrength;
+  }
+
 
   // Main rendering loop
   function animate() {
+    const time = performance.now() * 0.001;
+
     waterSimulation.stepSimulation(renderer);
     waterSimulation.updateNormals(renderer);
-    floatingSphere.update(waterSimulation.getHeightAt(
-      renderer,
-      floatingSphere.mesh.position.x,
-      floatingSphere.mesh.position.z
-    ));
+
+    const sphereX = floatingSphere.mesh.position.x;
+    const sphereZ = floatingSphere.mesh.position.z;
+    const sphereWakeHeight = waterSimulation.getHeightAt(renderer, sphereX, sphereZ) * wakeWaveStrength;
+    floatingSphere.update(sphereWakeHeight + getOceanHeightAt(sphereX, sphereZ, time));
+
+    const shipX = cargoShip.group.position.x;
+    const shipZ = cargoShip.group.position.z;
+    const shipWakeHeight = waterSimulation.getHeightAt(renderer, shipX, shipZ) * wakeWaveStrength;
+    cargoShip.update(shipWakeHeight + getOceanHeightAt(shipX, shipZ, time), time);
 
     const waterTexture = waterSimulation.texture.texture;
 
@@ -619,9 +802,68 @@ loadFile('shaders/utils.glsl').then((utils) => {
     pool.draw(renderer, waterTexture, causticsTexture);
     floatingSphere.draw(renderer);
     waterVolume.draw(renderer);
-    water.draw(renderer, waterTexture, causticsTexture);
+    water.draw(renderer, waterTexture, causticsTexture, time);
 
     window.requestAnimationFrame(animate);
+  }
+
+  function clampPoolCoordinate(value) {
+    return Math.min(0.98, Math.max(-0.98, value));
+  }
+
+  function addMovementWake(fromPoint, toPoint) {
+    const dx = toPoint.x - fromPoint.x;
+    const dz = toPoint.z - fromPoint.z;
+    const distance = Math.sqrt(dx * dx + dz * dz);
+
+    if (distance < wakeMinMovement) return;
+
+    const directionX = dx / distance;
+    const directionZ = dz / distance;
+    const perpendicularX = -directionZ;
+    const perpendicularZ = directionX;
+    const speed = Math.min(1, distance / 0.08);
+
+    waterSimulation.addDrop(
+      renderer,
+      clampPoolCoordinate(toPoint.x),
+      clampPoolCoordinate(toPoint.z),
+      0.045,
+      wakeTroughStrength * speed
+    );
+
+    for (let i = 1; i <= wakeDropCount; i++) {
+      const trail = i * wakeTrailSpacing;
+      const spread = trail * wakeSpread;
+      const fade = 1 - (i - 1) / wakeDropCount;
+      const baseX = toPoint.x - directionX * trail;
+      const baseZ = toPoint.z - directionZ * trail;
+      const radius = 0.028 + i * 0.006;
+      const crestStrength = wakeStrength * speed * fade;
+      const troughStrength = wakeTroughStrength * speed * fade;
+
+      waterSimulation.addDrop(
+        renderer,
+        clampPoolCoordinate(baseX + perpendicularX * spread),
+        clampPoolCoordinate(baseZ + perpendicularZ * spread),
+        radius,
+        crestStrength
+      );
+      waterSimulation.addDrop(
+        renderer,
+        clampPoolCoordinate(baseX - perpendicularX * spread),
+        clampPoolCoordinate(baseZ - perpendicularZ * spread),
+        radius,
+        crestStrength
+      );
+      waterSimulation.addDrop(
+        renderer,
+        clampPoolCoordinate(baseX),
+        clampPoolCoordinate(baseZ),
+        radius * 1.15,
+        troughStrength
+      );
+    }
   }
 
   function onMouseMove(event) {
@@ -641,13 +883,21 @@ loadFile('shaders/utils.glsl').then((utils) => {
       return;
     }
 
-    if (!isDraggingSphere) return;
+    if (!isDraggingSphere || !hasVisibleVessel()) return;
 
     const point = getPointerWaterPoint(event);
     if (!point) return;
 
+    if (lastWakePoint) {
+      addMovementWake(lastWakePoint, point);
+    }
+
     floatingSphere.moveToWaterPoint(point);
-    waterSimulation.addDrop(renderer, floatingSphere.mesh.position.x, floatingSphere.mesh.position.z, 0.03, 0.04);
+    cargoShip.moveToWaterPoint(point);
+    lastWakePoint = {
+      x: point.x,
+      z: point.z,
+    };
   }
 
   function onMouseDown(event) {
@@ -660,6 +910,7 @@ loadFile('shaders/utils.glsl').then((utils) => {
     }
 
     if (event.button !== 0) return;
+    if (!hasVisibleVessel()) return;
 
     const point = getPointerWaterPoint(event);
     if (!point) return;
@@ -667,7 +918,11 @@ loadFile('shaders/utils.glsl').then((utils) => {
     event.preventDefault();
     isDraggingSphere = true;
     floatingSphere.moveToWaterPoint(point);
-    waterSimulation.addDrop(renderer, floatingSphere.mesh.position.x, floatingSphere.mesh.position.z, 0.03, 0.04);
+    cargoShip.moveToWaterPoint(point);
+    lastWakePoint = {
+      x: point.x,
+      z: point.z,
+    };
   }
 
   function onMouseUp(event) {
@@ -677,6 +932,7 @@ loadFile('shaders/utils.glsl').then((utils) => {
 
     if (event.button === 0) {
       isDraggingSphere = false;
+      lastWakePoint = null;
     }
   }
 
@@ -684,9 +940,12 @@ loadFile('shaders/utils.glsl').then((utils) => {
     event.preventDefault();
   }
 
-  const loaded = [waterSimulation.loaded, caustics.loaded, water.loaded, pool.loaded, debug.loaded];
+  const loaded = [waterSimulation.loaded, caustics.loaded, water.loaded, pool.loaded, cargoShip.loaded, debug.loaded];
 
   Promise.all(loaded).then(() => {
+    setToggleButtonState(toggleSphereButton, floatingSphere.visible);
+    setToggleButtonState(toggleShipButton, cargoShip.visible);
+
     canvas.addEventListener('mousemove', { handleEvent: onMouseMove });
     canvas.addEventListener('mousedown', { handleEvent: onMouseDown });
     window.addEventListener('mouseup', { handleEvent: onMouseUp });

@@ -3,6 +3,8 @@ precision highp int;
 
 uniform sampler2D texture;
 uniform vec2 delta;
+uniform float rippleDistance;
+uniform float wakeHeightRecovery;
 varying vec2 coord;
 
 
@@ -24,10 +26,11 @@ void main() {
   info.g += (average - info.r) * 2.0;
 
   /* attenuate the velocity a little so waves do not last forever */
-  info.g *= 0.995;
+  info.g *= rippleDistance;
 
   /* move the vertex along the velocity */
   info.r += info.g;
+  info.r *= wakeHeightRecovery;
 
   gl_FragColor = info;
 }

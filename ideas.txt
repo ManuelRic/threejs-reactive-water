@@ -1,0 +1,2 @@
+add a value that determines the basic weight height, this way, if we register high wave height the foam will appear, 
+giving the visual effect of a wavy day automatically.
