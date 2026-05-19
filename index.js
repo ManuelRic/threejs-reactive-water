@@ -1,8 +1,12 @@
 const canvas = document.getElementById('canvas');
 const buoyancySlider = document.getElementById('buoyancy');
 const buoyancyValue = document.getElementById('buoyancy-value');
+const waveSizeSlider = document.getElementById('wave-size');
+const waveSizeValue = document.getElementById('wave-size-value');
 const toggleSphereButton = document.getElementById('toggle-sphere');
 const toggleShipButton = document.getElementById('toggle-ship');
+const toggleObjectFoamButton = document.getElementById('toggle-object-foam');
+const toggleWaveFoamButton = document.getElementById('toggle-wave-foam');
 
 const width = canvas.width;
 const height = canvas.height;
@@ -10,18 +14,35 @@ const height = canvas.height;
 // Lower values make wake waves fade sooner. Higher values let them travel farther.
 const rippleDistance = 0.92;
 const wakeHeightRecovery = 0.992;
-const oceanWaveStrength = 0.035;
+const maxWakeHeight = 0.045;
+let oceanWaveStrength = Number(waveSizeSlider.value);
 const wakeWaveStrength = 0.75;
-const foamHeightThreshold = 0.018;
-const foamHeightSoftness = 0.035;
+const foamHeightThreshold = 0.016;
+const foamHeightSoftness = 0.03;
 const foamFromHeightStrength = 1.25;
+let objectFoamEnabled = 1;
+let waveFoamEnabled = 0;
 const wakeDropCount = 5;
 const wakeTrailSpacing = 0.055;
 const wakeSpread = 0.72;
-const wakeStrength = 0.04;
-const wakeTroughStrength = -0.018;
+const wakeStrength = 0.018;
+const wakeTroughStrength = -0.014;
 const wakeMinMovement = 0.006;
-const shipModelYawOffset = 0;
+const shipWakeBowOffset = 0.3;
+const shipWakeSternOffset = 0.28;
+const shipWakeBeam = 0.18;
+const shipWakeHullSamples = 4;
+const shipWakeMinVisibleSpeed = 0.28;
+const shipWakeGeometrySideBins = 11;
+const shipWakeGeometryLengthBins = 6;
+const shipWakePressureStrength = -0.010;
+const shipWakeEmitterStrength = 0.010;
+const shipModelYawOffset = 2*Math.PI;
+const shipMovementYawOffset = Math.PI / 2;
+const shipAutopilotSpeed = 0.24;
+const shipAutopilotTurnBiasMax = 0.75;
+const shipAutopilotTargetRadius = 0.12;
+const shipAutopilotBounds = 0.72;
 
 // Colors
 const black = new THREE.Color('black');
@@ -46,11 +67,14 @@ loadFile('shaders/utils.glsl').then((utils) => {
   const cameraTarget = new THREE.Vector3(0, -0.12, 0);
   const cameraOffset = new THREE.Vector3();
   const cameraSpherical = new THREE.Spherical();
+  const minCameraDistance = 1.25;
+  const maxCameraDistance = 6.0;
   camera.position.set(0, 1.15, -3.35);
   camera.lookAt(cameraTarget);
   cameraSpherical.setFromVector3(camera.position.clone().sub(cameraTarget));
 
   function updateCameraFromOrbit() {
+    cameraSpherical.radius = Math.min(maxCameraDistance, Math.max(minCameraDistance, cameraSpherical.radius));
     cameraOffset.setFromSpherical(cameraSpherical);
     camera.position.copy(cameraTarget).add(cameraOffset);
     camera.lookAt(cameraTarget);
@@ -74,7 +98,8 @@ loadFile('shaders/utils.glsl').then((utils) => {
   // Ray caster
   const raycaster = new THREE.Raycaster();
   const mouse = new THREE.Vector2();
-  let isDraggingSphere = false;
+  let draggedVessel = null;
+  let draggedVesselOffset = { x: 0, z: 0 };
   let isRotatingPool = false;
   let previousMouseX = 0;
   let previousMouseY = 0;
@@ -159,6 +184,7 @@ loadFile('shaders/utils.glsl').then((utils) => {
               delta: { value: [1 / 256, 1 / 256] },
               rippleDistance: { value: rippleDistance },
               wakeHeightRecovery: { value: wakeHeightRecovery },
+              maxWakeHeight: { value: maxWakeHeight },
               texture: { value: null },
           },
           vertexShader: vertexShader,
@@ -287,6 +313,8 @@ loadFile('shaders/utils.glsl').then((utils) => {
               foamHeightThreshold: { value: foamHeightThreshold },
               foamHeightSoftness: { value: foamHeightSoftness },
               foamFromHeightStrength: { value: foamFromHeightStrength },
+              objectFoamEnabled: { value: objectFoamEnabled },
+              waveFoamEnabled: { value: waveFoamEnabled },
               underwater: { value: false },
           },
           vertexShader: vertexShader,
@@ -520,6 +548,15 @@ class FloatingSphere {
     update(waterLevel) {
       this.waterLevel = waterLevel;
 
+      if (draggedVessel === this) {
+        this.velocity = 0;
+        this.mesh.position.y = this.waterLevel;
+        this.clampToPool();
+        this.updateShadow();
+        this.updateWaterline();
+        return;
+      }
+
       const bottom = this.mesh.position.y - this.radius;
       const submergedDepth = Math.min(Math.max(this.waterLevel - bottom, 0), this.radius * 2);
       const submergedRatio = submergedDepth / (this.radius * 2);
@@ -597,10 +634,27 @@ class FloatingSphere {
       this.waterLevel = 0;
       this.draft = 0.035;
       this.targetYaw = 0;
+      this.wakeEmitters = [];
+      this.wakeExtents = {
+        bow: shipWakeBowOffset,
+        stern: shipWakeSternOffset,
+        beam: shipWakeBeam,
+      };
       this.group = new THREE.Group();
       this.modelRoot = new THREE.Group();
       this.group.add(this.modelRoot);
       this.group.position.set(-0.5, 0, 0.15);
+
+      const dragGeometry = new THREE.BoxBufferGeometry(0.56, 0.18, 0.22);
+      const dragMaterial = new THREE.MeshBasicMaterial({
+        transparent: true,
+        opacity: 0,
+        depthWrite: false,
+      });
+      this.dragTarget = new THREE.Mesh(dragGeometry, dragMaterial);
+      this.dragTarget.position.y = 0.08;
+      this.group.add(this.dragTarget);
+
       objectScene.add(this.group);
 
       this.loaded = new Promise((resolve) => {
@@ -611,12 +665,12 @@ class FloatingSphere {
         }
 
         const loader = new THREE.GLTFLoader();
-        loader.load('models/pato_dorado.glb', (gltf) => {
+        loader.load('models/cargo_03.glb', (gltf) => {
           const model = gltf.scene;
           const originalBox = new THREE.Box3().setFromObject(model);
           const originalSize = originalBox.getSize(new THREE.Vector3());
           const maxDeckSize = Math.max(originalSize.x, originalSize.z);
-          const scale = 0.025;
+          const scale = 0.15;
 
           model.scale.setScalar(scale);
           this.modelRoot.add(model);
@@ -627,6 +681,10 @@ class FloatingSphere {
           model.position.z -= center.z;
           model.position.y -= box.min.y;
           model.rotation.y = shipModelYawOffset;
+          model.updateMatrixWorld(true);
+          this.group.updateMatrixWorld(true);
+          this.buildWakeEmitters(model);
+          this.resizeDragTarget();
 
           model.traverse((child) => {
             if (child.isMesh) {
@@ -649,6 +707,174 @@ class FloatingSphere {
       this.group.visible = visible;
     }
 
+    resizeDragTarget() {
+      this.dragTarget.scale.set(
+        Math.max(0.35, this.wakeExtents.beam * 3.2),
+        1,
+        Math.max(0.35, (this.wakeExtents.bow + this.wakeExtents.stern) * 1.25)
+      );
+    }
+
+    collectFootprintPoints(model) {
+      const points = [];
+      const vertex = new THREE.Vector3();
+
+      this.group.updateMatrixWorld(true);
+      model.updateMatrixWorld(true);
+
+      model.traverse((child) => {
+        if (!child.isMesh || !child.geometry || !child.geometry.attributes || !child.geometry.attributes.position) {
+          return;
+        }
+
+        const position = child.geometry.attributes.position;
+        const stride = Math.max(1, Math.floor(position.count / 2500));
+
+        for (let i = 0; i < position.count; i += stride) {
+          vertex.fromBufferAttribute(position, i);
+          child.localToWorld(vertex);
+          this.group.worldToLocal(vertex);
+          points.push({
+            x: vertex.x,
+            y: vertex.y,
+            z: vertex.z,
+          });
+        }
+      });
+
+      return points;
+    }
+
+    buildWakeEmitters(model) {
+      const points = this.collectFootprintPoints(model);
+
+      if (points.length === 0) return;
+
+      let minX = Infinity;
+      let maxX = -Infinity;
+      let minY = Infinity;
+      let maxY = -Infinity;
+      let minZ = Infinity;
+      let maxZ = -Infinity;
+
+      for (const point of points) {
+        minX = Math.min(minX, point.x);
+        maxX = Math.max(maxX, point.x);
+        minY = Math.min(minY, point.y);
+        maxY = Math.max(maxY, point.y);
+        minZ = Math.min(minZ, point.z);
+        maxZ = Math.max(maxZ, point.z);
+      }
+
+      const sizeX = maxX - minX;
+      const sizeZ = maxZ - minZ;
+      const forwardAxis = sizeX > sizeZ ? 'x' : 'z';
+      const sideAxis = forwardAxis === 'x' ? 'z' : 'x';
+      const lowerCutoff = minY + (maxY - minY) * 0.62;
+      const footprintPoints = points.filter((point) => point.y <= lowerCutoff);
+      const usablePoints = footprintPoints.length > 16 ? footprintPoints : points;
+      const forwardValues = usablePoints.map((point) => point[forwardAxis]);
+      const sideValues = usablePoints.map((point) => point[sideAxis]);
+      const forwardMin = Math.min(...forwardValues);
+      const forwardMax = Math.max(...forwardValues);
+      const sideMin = Math.min(...sideValues);
+      const sideMax = Math.max(...sideValues);
+      const forwardLength = Math.max(0.001, forwardMax - forwardMin);
+      const beam = Math.max(0.001, sideMax - sideMin);
+      const bowEmitters = [];
+      const sideEmitters = [];
+
+      for (let i = 0; i < shipWakeGeometrySideBins; i++) {
+        const binMin = sideMin + beam * i / shipWakeGeometrySideBins;
+        const binMax = sideMin + beam * (i + 1) / shipWakeGeometrySideBins;
+        let bestPoint = null;
+        let bestForward = -Infinity;
+
+        for (const point of usablePoints) {
+          const side = point[sideAxis];
+          const forward = point[forwardAxis];
+
+          if (side < binMin || side > binMax || forward < forwardMin + forwardLength * 0.35) continue;
+
+          if (forward > bestForward) {
+            bestForward = forward;
+            bestPoint = point;
+          }
+        }
+
+        if (!bestPoint) continue;
+
+        bowEmitters.push({
+          forward: bestPoint[forwardAxis],
+          side: bestPoint[sideAxis],
+        });
+      }
+
+      for (let i = 0; i < shipWakeGeometryLengthBins; i++) {
+        const binMin = forwardMin + forwardLength * i / shipWakeGeometryLengthBins;
+        const binMax = forwardMin + forwardLength * (i + 1) / shipWakeGeometryLengthBins;
+        let leftPoint = null;
+        let rightPoint = null;
+        let leftSide = Infinity;
+        let rightSide = -Infinity;
+
+        for (const point of usablePoints) {
+          const forward = point[forwardAxis];
+          const side = point[sideAxis];
+
+          if (forward < binMin || forward > binMax) continue;
+
+          if (side < leftSide) {
+            leftSide = side;
+            leftPoint = point;
+          }
+
+          if (side > rightSide) {
+            rightSide = side;
+            rightPoint = point;
+          }
+        }
+
+        if (leftPoint) {
+          sideEmitters.push({
+            forward: leftPoint[forwardAxis],
+            side: leftPoint[sideAxis],
+          });
+        }
+
+        if (rightPoint && rightPoint !== leftPoint) {
+          sideEmitters.push({
+            forward: rightPoint[forwardAxis],
+            side: rightPoint[sideAxis],
+          });
+        }
+      }
+
+      const centerForward = (forwardMin + forwardMax) * 0.5;
+      const centerSide = (sideMin + sideMax) * 0.5;
+
+      this.wakeExtents = {
+        bow: Math.max(shipWakeBowOffset * 0.5, forwardMax - centerForward),
+        stern: Math.max(shipWakeSternOffset * 0.5, centerForward - forwardMin),
+        beam: Math.max(shipWakeBeam * 0.5, beam),
+      };
+
+      this.wakeEmitters = [
+        ...bowEmitters.map((point) => ({
+          forward: point.forward - centerForward,
+          side: point.side - centerSide,
+          radius: Math.max(0.018, this.wakeExtents.beam * 0.045),
+          strength: shipWakeEmitterStrength,
+        })),
+        ...sideEmitters.map((point) => ({
+          forward: point.forward - centerForward,
+          side: point.side - centerSide,
+          radius: Math.max(0.015, this.wakeExtents.beam * 0.035),
+          strength: shipWakeEmitterStrength * 0.55,
+        })),
+      ];
+    }
+
     clampToPool() {
       this.group.position.x = Math.min(0.9, Math.max(-0.9, this.group.position.x));
       this.group.position.z = Math.min(0.9, Math.max(-0.9, this.group.position.z));
@@ -659,8 +885,8 @@ class FloatingSphere {
       const dx = point.x - this.group.position.x;
       const dz = point.z - this.group.position.z;
 
-      if (Math.sqrt(dx * dx + dz * dz) > 0.004) {
-        this.targetYaw = Math.atan2(dx, dz);
+      if (Math.sqrt(dx * dx + dz * dz) > 0.001) {
+        this.targetYaw = Math.atan2(dx, dz) + shipMovementYawOffset;
       }
 
       this.group.position.x = point.x;
@@ -722,6 +948,11 @@ class FloatingSphere {
   const cargoShip = new CargoShip();
   floatingSphere.setVisible(false);
   let lastWakePoint = null;
+  let shipAutoTarget = null;
+  let shipAutoLastTime = null;
+  let shipAutoNextTurnTime = 0;
+  let shipAutoTurnBias = 0;
+  let shipAutoLastWakePoint = null;
 
   const debug = new Debug();
 
@@ -731,6 +962,15 @@ class FloatingSphere {
     floatingSphere.setBuoyancy(value);
   });
 
+  waveSizeSlider.addEventListener('input', () => {
+    oceanWaveStrength = Number(waveSizeSlider.value);
+    waveSizeValue.textContent = oceanWaveStrength.toFixed(3);
+
+    if (water.material) {
+      water.material.uniforms['oceanWaveStrength'].value = oceanWaveStrength;
+    }
+  });
+
   function setToggleButtonState(button, enabled) {
     button.classList.toggle('is-info', enabled);
     button.classList.toggle('is-light', !enabled);
@@ -738,33 +978,189 @@ class FloatingSphere {
 
   toggleSphereButton.addEventListener('click', () => {
     floatingSphere.setVisible(!floatingSphere.visible);
+    if (!floatingSphere.visible && draggedVessel === floatingSphere) {
+      draggedVessel = null;
+      draggedVesselOffset = { x: 0, z: 0 };
+      lastWakePoint = null;
+    }
     setToggleButtonState(toggleSphereButton, floatingSphere.visible);
   });
 
   toggleShipButton.addEventListener('click', () => {
     cargoShip.setVisible(!cargoShip.visible);
+    if (!cargoShip.visible && draggedVessel === cargoShip) {
+      draggedVessel = null;
+      draggedVesselOffset = { x: 0, z: 0 };
+      lastWakePoint = null;
+    }
     setToggleButtonState(toggleShipButton, cargoShip.visible);
+  });
+
+  toggleObjectFoamButton.addEventListener('click', () => {
+    objectFoamEnabled = objectFoamEnabled > 0 ? 0 : 1;
+    setToggleButtonState(toggleObjectFoamButton, objectFoamEnabled > 0);
+
+    if (water.material) {
+      water.material.uniforms['objectFoamEnabled'].value = objectFoamEnabled;
+    }
+  });
+
+  toggleWaveFoamButton.addEventListener('click', () => {
+    waveFoamEnabled = waveFoamEnabled > 0 ? 0 : 1;
+    setToggleButtonState(toggleWaveFoamButton, waveFoamEnabled > 0);
+
+    if (water.material) {
+      water.material.uniforms['waveFoamEnabled'].value = waveFoamEnabled;
+    }
   });
 
   function hasVisibleVessel() {
     return floatingSphere.visible || cargoShip.visible;
   }
 
-  function oceanWave(pointX, pointZ, directionX, directionZ, frequency, speed, amplitude, time) {
+  function getVesselPoint(vessel) {
+    const position = vessel === floatingSphere ? floatingSphere.mesh.position : cargoShip.group.position;
+
+    return {
+      x: position.x,
+      z: position.z,
+    };
+  }
+
+  function getOffsetWaterPoint(point) {
+    return {
+      x: point.x - draggedVesselOffset.x,
+      z: point.z - draggedVesselOffset.z,
+    };
+  }
+
+  function randomRange(min, max) {
+    return min + Math.random() * (max - min);
+  }
+
+  function randomShipAutoTarget() {
+    return {
+      x: randomRange(-shipAutopilotBounds, shipAutopilotBounds),
+      z: randomRange(-shipAutopilotBounds, shipAutopilotBounds),
+    };
+  }
+
+  function chooseShipAutoTurn(time) {
+    shipAutoTurnBias = randomRange(-shipAutopilotTurnBiasMax, shipAutopilotTurnBiasMax);
+    shipAutoNextTurnTime = time + randomRange(0.9, 2.4);
+  }
+
+  function updateAutonomousShip(time) {
+    if (!cargoShip.visible || draggedVessel === cargoShip) {
+      shipAutoLastTime = time;
+      shipAutoLastWakePoint = null;
+      return;
+    }
+
+    if (!shipAutoTarget) {
+      shipAutoTarget = randomShipAutoTarget();
+      chooseShipAutoTurn(time);
+    }
+
+    const current = getVesselPoint(cargoShip);
+    const dx = shipAutoTarget.x - current.x;
+    const dz = shipAutoTarget.z - current.z;
+    const distance = Math.sqrt(dx * dx + dz * dz);
+
+    if (distance < shipAutopilotTargetRadius) {
+      shipAutoTarget = randomShipAutoTarget();
+      chooseShipAutoTurn(time);
+      shipAutoLastWakePoint = null;
+      return;
+    }
+
+    if (time >= shipAutoNextTurnTime) {
+      chooseShipAutoTurn(time);
+    }
+
+    const previousTime = shipAutoLastTime === null ? time : shipAutoLastTime;
+    const deltaTime = Math.min(0.05, Math.max(0, time - previousTime));
+    shipAutoLastTime = time;
+
+    if (deltaTime <= 0) return;
+
+    const targetAngle = Math.atan2(dx, dz);
+    const travelAngle = targetAngle + shipAutoTurnBias * Math.min(1, distance / 0.45);
+    const step = Math.min(distance, shipAutopilotSpeed * deltaTime);
+    const nextPoint = {
+      x: current.x + Math.sin(travelAngle) * step,
+      z: current.z + Math.cos(travelAngle) * step,
+    };
+
+    const wakeFromPoint = shipAutoLastWakePoint || current;
+    const wakeDx = nextPoint.x - wakeFromPoint.x;
+    const wakeDz = nextPoint.z - wakeFromPoint.z;
+
+    if (Math.sqrt(wakeDx * wakeDx + wakeDz * wakeDz) >= wakeMinMovement) {
+      addMovementWake(cargoShip, wakeFromPoint, nextPoint);
+      shipAutoLastWakePoint = { x: nextPoint.x, z: nextPoint.z };
+    }
+
+    cargoShip.moveToWaterPoint(nextPoint);
+  }
+
+  function pickVessel(event) {
+    updateMouse(event);
+    raycaster.setFromCamera(mouse, camera);
+
+    const hits = [];
+
+    if (floatingSphere.visible) {
+      const sphereHits = raycaster.intersectObject(floatingSphere.mesh, true);
+      if (sphereHits.length > 0) {
+        hits.push({
+          distance: sphereHits[0].distance,
+          vessel: floatingSphere,
+        });
+      }
+    }
+
+    if (cargoShip.visible) {
+      const shipHits = raycaster.intersectObject(cargoShip.group, true);
+      if (shipHits.length > 0) {
+        hits.push({
+          distance: shipHits[0].distance,
+          vessel: cargoShip,
+        });
+      }
+    }
+
+    if (hits.length === 0) return null;
+
+    hits.sort((a, b) => a.distance - b.distance);
+    return hits[0].vessel;
+  }
+
+  function gerstnerHeight(pointX, pointZ, directionX, directionZ, frequency, speed, amplitude, time) {
     const length = Math.sqrt(directionX * directionX + directionZ * directionZ);
     const normalizedX = directionX / length;
     const normalizedZ = directionZ / length;
+    const crest = Math.sin((pointX * normalizedX + pointZ * normalizedZ) * frequency + time * speed);
+    const storm = Math.min(1, Math.max(0, (oceanWaveStrength - 0.08) / 0.04));
+    const easedStorm = storm * storm * (3 - 2 * storm);
+    const positiveCrest = Math.max(crest, 0);
+    const negativeCrest = Math.max(-crest, 0);
 
-    return Math.sin((pointX * normalizedX + pointZ * normalizedZ) * frequency + time * speed) * amplitude;
+    return (
+      crest +
+      Math.pow(positiveCrest, 3) * easedStorm * 0.85 -
+      Math.pow(negativeCrest, 2) * easedStorm * 0.16
+    ) * amplitude;
   }
 
   function getOceanHeightAt(x, z, time) {
     let height = 0;
 
-    height += oceanWave(x, z, 1, 0.35, 7, 1.3, 0.52, time);
-    height += oceanWave(x, z, -0.65, 1, 11, 1.9, 0.24, time);
-    height += oceanWave(x, z, 0.2, 1, 17, 2.7, 0.12, time);
-    height += oceanWave(x, z, -1, 0.1, 23, 3.4, 0.06, time);
+    height += gerstnerHeight(x, z, 1, 0.24, 4.2, 0.85, 0.55, time);
+    height += gerstnerHeight(x, z, 0.82, 0.55, 6.8, 1.22, 0.32, time);
+    height += gerstnerHeight(x, z, -0.35, 1, 10.5, 1.85, 0.18, time);
+    height += gerstnerHeight(x, z, 0.2, 1, 17, 2.65, 0.08, time);
+    height += gerstnerHeight(x, z, -1, 0.15, 24, 3.4, 0.045, time);
 
     return height * oceanWaveStrength;
   }
@@ -773,6 +1169,8 @@ class FloatingSphere {
   // Main rendering loop
   function animate() {
     const time = performance.now() * 0.001;
+
+    updateAutonomousShip(time);
 
     waterSimulation.stepSimulation(renderer);
     waterSimulation.updateNormals(renderer);
@@ -811,7 +1209,131 @@ class FloatingSphere {
     return Math.min(0.98, Math.max(-0.98, value));
   }
 
-  function addMovementWake(fromPoint, toPoint) {
+  function addWakeDrop(x, z, radius, strength) {
+    waterSimulation.addDrop(
+      renderer,
+      clampPoolCoordinate(x),
+      clampPoolCoordinate(z),
+      radius,
+      strength
+    );
+  }
+
+  function addSphereWake(fromPoint, toPoint, directionX, directionZ, perpendicularX, perpendicularZ, speed) {
+    const bowX = toPoint.x + directionX * floatingSphere.radius;
+    const bowZ = toPoint.z + directionZ * floatingSphere.radius;
+
+    addWakeDrop(bowX, bowZ, floatingSphere.radius * 0.55, wakeTroughStrength * speed);
+    addWakeDrop(
+      bowX + perpendicularX * floatingSphere.radius * 0.72,
+      bowZ + perpendicularZ * floatingSphere.radius * 0.72,
+      floatingSphere.radius * 0.44,
+      wakeStrength * speed
+    );
+    addWakeDrop(
+      bowX - perpendicularX * floatingSphere.radius * 0.72,
+      bowZ - perpendicularZ * floatingSphere.radius * 0.72,
+      floatingSphere.radius * 0.44,
+      wakeStrength * speed
+    );
+  }
+
+  function addShipGeometryWake(fromPoint, toPoint, directionX, directionZ, perpendicularX, perpendicularZ, speed) {
+    const bowOffset = cargoShip.wakeExtents.bow;
+    const sternOffset = cargoShip.wakeExtents.stern;
+    const beam = cargoShip.wakeExtents.beam;
+    const bowX = toPoint.x + directionX * bowOffset;
+    const bowZ = toPoint.z + directionZ * bowOffset;
+    const sternX = toPoint.x - directionX * sternOffset;
+    const sternZ = toPoint.z - directionZ * sternOffset;
+    const hullLength = bowOffset + sternOffset;
+    const normalizedEmitterStrength = cargoShip.wakeEmitters.length > 0
+      ? 1 / Math.sqrt(cargoShip.wakeEmitters.length)
+      : 1;
+
+    if (cargoShip.wakeEmitters.length === 0) {
+      addWakeDrop(bowX, bowZ, 0.035, wakeTroughStrength * speed);
+      addWakeDrop(
+        bowX + perpendicularX * beam * 0.48,
+        bowZ + perpendicularZ * beam * 0.48,
+        0.026,
+        wakeStrength * speed
+      );
+      addWakeDrop(
+        bowX - perpendicularX * beam * 0.48,
+        bowZ - perpendicularZ * beam * 0.48,
+        0.026,
+        wakeStrength * speed
+      );
+    } else {
+      for (let i = 0; i < shipWakeHullSamples; i++) {
+        const t = shipWakeHullSamples === 1 ? 0.5 : i / (shipWakeHullSamples - 1);
+        const hullX = bowX - directionX * hullLength * t;
+        const hullZ = bowZ - directionZ * hullLength * t;
+        const fade = 1 - Math.abs(t - 0.45) * 0.55;
+
+        addWakeDrop(
+          hullX,
+          hullZ,
+          Math.max(0.035, beam * 0.16),
+          shipWakePressureStrength * speed * fade
+        );
+      }
+
+      for (const emitter of cargoShip.wakeEmitters) {
+        const emitterX = toPoint.x + directionX * emitter.forward + perpendicularX * emitter.side;
+        const emitterZ = toPoint.z + directionZ * emitter.forward + perpendicularZ * emitter.side;
+        const bowness = Math.max(0, emitter.forward / Math.max(0.001, bowOffset));
+        const sideness = Math.min(1, Math.abs(emitter.side) / Math.max(0.001, beam * 0.5));
+        const strength = emitter.strength * speed * normalizedEmitterStrength * (0.35 + bowness * 0.9 + sideness * 0.25);
+
+        addWakeDrop(emitterX, emitterZ, emitter.radius, strength);
+      }
+
+      addWakeDrop(bowX, bowZ, Math.max(0.022, beam * 0.045), wakeTroughStrength * speed * 0.9);
+    }
+
+    addWakeDrop(sternX, sternZ, Math.max(0.035, beam * 0.09), wakeTroughStrength * speed * 0.45);
+  }
+
+  function addTrailingKelvinWake(vessel, fromPoint, toPoint, directionX, directionZ, perpendicularX, perpendicularZ, speed) {
+    const originOffset = vessel === cargoShip ? cargoShip.wakeExtents.stern : floatingSphere.radius * 0.95;
+    const originX = toPoint.x - directionX * originOffset;
+    const originZ = toPoint.z - directionZ * originOffset;
+
+    for (let i = 1; i <= wakeDropCount; i++) {
+      const trail = i * wakeTrailSpacing;
+      const spread = trail * wakeSpread;
+      const fade = 1 - (i - 1) / wakeDropCount;
+      const baseX = originX - directionX * trail;
+      const baseZ = originZ - directionZ * trail;
+      const radius = 0.026 + i * 0.005;
+      const vesselWakeScale = vessel === cargoShip ? 0.55 : 1;
+      const crestStrength = wakeStrength * speed * fade * vesselWakeScale;
+      const troughStrength = wakeTroughStrength * speed * fade * vesselWakeScale;
+
+      addWakeDrop(
+        baseX + perpendicularX * spread,
+        baseZ + perpendicularZ * spread,
+        radius,
+        crestStrength
+      );
+      addWakeDrop(
+        baseX - perpendicularX * spread,
+        baseZ - perpendicularZ * spread,
+        radius,
+        crestStrength
+      );
+      addWakeDrop(
+        baseX,
+        baseZ,
+        radius * 1.15,
+        troughStrength
+      );
+    }
+  }
+
+  function addMovementWake(vessel, fromPoint, toPoint) {
     const dx = toPoint.x - fromPoint.x;
     const dz = toPoint.z - fromPoint.z;
     const distance = Math.sqrt(dx * dx + dz * dz);
@@ -823,47 +1345,15 @@ class FloatingSphere {
     const perpendicularX = -directionZ;
     const perpendicularZ = directionX;
     const speed = Math.min(1, distance / 0.08);
+    const wakeSpeed = vessel === cargoShip ? Math.max(speed, shipWakeMinVisibleSpeed) : speed;
 
-    waterSimulation.addDrop(
-      renderer,
-      clampPoolCoordinate(toPoint.x),
-      clampPoolCoordinate(toPoint.z),
-      0.045,
-      wakeTroughStrength * speed
-    );
-
-    for (let i = 1; i <= wakeDropCount; i++) {
-      const trail = i * wakeTrailSpacing;
-      const spread = trail * wakeSpread;
-      const fade = 1 - (i - 1) / wakeDropCount;
-      const baseX = toPoint.x - directionX * trail;
-      const baseZ = toPoint.z - directionZ * trail;
-      const radius = 0.028 + i * 0.006;
-      const crestStrength = wakeStrength * speed * fade;
-      const troughStrength = wakeTroughStrength * speed * fade;
-
-      waterSimulation.addDrop(
-        renderer,
-        clampPoolCoordinate(baseX + perpendicularX * spread),
-        clampPoolCoordinate(baseZ + perpendicularZ * spread),
-        radius,
-        crestStrength
-      );
-      waterSimulation.addDrop(
-        renderer,
-        clampPoolCoordinate(baseX - perpendicularX * spread),
-        clampPoolCoordinate(baseZ - perpendicularZ * spread),
-        radius,
-        crestStrength
-      );
-      waterSimulation.addDrop(
-        renderer,
-        clampPoolCoordinate(baseX),
-        clampPoolCoordinate(baseZ),
-        radius * 1.15,
-        troughStrength
-      );
+    if (vessel === cargoShip) {
+      addShipGeometryWake(fromPoint, toPoint, directionX, directionZ, perpendicularX, perpendicularZ, wakeSpeed);
+    } else {
+      addSphereWake(fromPoint, toPoint, directionX, directionZ, perpendicularX, perpendicularZ, speed);
     }
+
+    addTrailingKelvinWake(vessel, fromPoint, toPoint, directionX, directionZ, perpendicularX, perpendicularZ, wakeSpeed);
   }
 
   function onMouseMove(event) {
@@ -883,21 +1373,20 @@ class FloatingSphere {
       return;
     }
 
-    if (!isDraggingSphere || !hasVisibleVessel()) return;
+    if (!draggedVessel) return;
 
     const point = getPointerWaterPoint(event);
     if (!point) return;
 
+    event.preventDefault();
+    const targetPoint = getOffsetWaterPoint(point);
+
     if (lastWakePoint) {
-      addMovementWake(lastWakePoint, point);
+      addMovementWake(draggedVessel, lastWakePoint, targetPoint);
     }
 
-    floatingSphere.moveToWaterPoint(point);
-    cargoShip.moveToWaterPoint(point);
-    lastWakePoint = {
-      x: point.x,
-      z: point.z,
-    };
+    draggedVessel.moveToWaterPoint(targetPoint);
+    lastWakePoint = getVesselPoint(draggedVessel);
   }
 
   function onMouseDown(event) {
@@ -912,17 +1401,24 @@ class FloatingSphere {
     if (event.button !== 0) return;
     if (!hasVisibleVessel()) return;
 
+    const vessel = pickVessel(event);
+    if (!vessel) return;
+
     const point = getPointerWaterPoint(event);
     if (!point) return;
 
     event.preventDefault();
-    isDraggingSphere = true;
-    floatingSphere.moveToWaterPoint(point);
-    cargoShip.moveToWaterPoint(point);
-    lastWakePoint = {
-      x: point.x,
-      z: point.z,
+    draggedVessel = vessel;
+    if (draggedVessel === cargoShip) {
+      shipAutoTarget = null;
+      shipAutoLastWakePoint = null;
+    }
+    const vesselPoint = getVesselPoint(draggedVessel);
+    draggedVesselOffset = {
+      x: point.x - vesselPoint.x,
+      z: point.z - vesselPoint.z,
     };
+    lastWakePoint = getVesselPoint(draggedVessel);
   }
 
   function onMouseUp(event) {
@@ -931,7 +1427,13 @@ class FloatingSphere {
     }
 
     if (event.button === 0) {
-      isDraggingSphere = false;
+      if (draggedVessel === cargoShip) {
+        shipAutoTarget = null;
+        shipAutoLastTime = null;
+        shipAutoLastWakePoint = null;
+      }
+      draggedVessel = null;
+      draggedVesselOffset = { x: 0, z: 0 };
       lastWakePoint = null;
     }
   }
@@ -940,14 +1442,25 @@ class FloatingSphere {
     event.preventDefault();
   }
 
+  function onWheel(event) {
+    event.preventDefault();
+    const zoomFactor = Math.exp(event.deltaY * 0.001);
+    cameraSpherical.radius *= zoomFactor;
+    updateCameraFromOrbit();
+  }
+
   const loaded = [waterSimulation.loaded, caustics.loaded, water.loaded, pool.loaded, cargoShip.loaded, debug.loaded];
 
   Promise.all(loaded).then(() => {
+    waveSizeValue.textContent = oceanWaveStrength.toFixed(3);
     setToggleButtonState(toggleSphereButton, floatingSphere.visible);
     setToggleButtonState(toggleShipButton, cargoShip.visible);
+    setToggleButtonState(toggleObjectFoamButton, objectFoamEnabled > 0);
+    setToggleButtonState(toggleWaveFoamButton, waveFoamEnabled > 0);
 
     canvas.addEventListener('mousemove', { handleEvent: onMouseMove });
     canvas.addEventListener('mousedown', { handleEvent: onMouseDown });
+    canvas.addEventListener('wheel', { handleEvent: onWheel }, { passive: false });
     window.addEventListener('mouseup', { handleEvent: onMouseUp });
     canvas.addEventListener('contextmenu', { handleEvent: onContextMenu });
 

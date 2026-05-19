@@ -11,6 +11,8 @@ uniform float wakeWaveStrength;
 uniform float foamHeightThreshold;
 uniform float foamHeightSoftness;
 uniform float foamFromHeightStrength;
+uniform float objectFoamEnabled;
+uniform float waveFoamEnabled;
 
 varying vec3 eye;
 varying vec3 pos;
@@ -71,27 +73,61 @@ float foamTexture(vec2 coord, vec2 direction) {
   return clamp(cells + flecks * 0.45, 0.0, 1.0);
 }
 
-float wave(vec2 point, vec2 direction, float frequency, float speed, float amplitude) {
-  return sin(dot(point, normalize(direction)) * frequency + time * speed) * amplitude;
+struct OceanWave {
+  vec2 direction;
+  float frequency;
+  float speed;
+  float amplitude;
+  float steepness;
+};
+
+float stormAmount() {
+  return smoothstep(0.08, 0.12, oceanWaveStrength);
+}
+
+float sharpenCrest(float crest, float storm) {
+  float positiveCrest = max(crest, 0.0);
+  float negativeCrest = max(-crest, 0.0);
+
+  return crest + pow(positiveCrest, 3.0) * storm * 0.85 - pow(negativeCrest, 2.0) * storm * 0.16;
+}
+
+float gerstnerHeight(vec2 point, OceanWave wave) {
+  vec2 direction = normalize(wave.direction);
+  float phase = dot(point, direction) * wave.frequency + time * wave.speed;
+  float crest = sin(phase);
+
+  return sharpenCrest(crest, stormAmount()) * wave.amplitude;
 }
 
 float oceanHeight(vec2 point) {
   float height = 0.0;
-  height += wave(point, vec2(1.0, 0.35), 7.0, 1.3, 0.52);
-  height += wave(point, vec2(-0.65, 1.0), 11.0, 1.9, 0.24);
-  height += wave(point, vec2(0.2, 1.0), 17.0, 2.7, 0.12);
-  height += wave(point, vec2(-1.0, 0.1), 23.0, 3.4, 0.06);
+
+  height += gerstnerHeight(point, OceanWave(vec2(1.0, 0.24), 4.2, 0.85, 0.55, 0.62));
+  height += gerstnerHeight(point, OceanWave(vec2(0.82, 0.55), 6.8, 1.22, 0.32, 0.48));
+  height += gerstnerHeight(point, OceanWave(vec2(-0.35, 1.0), 10.5, 1.85, 0.18, 0.34));
+  height += gerstnerHeight(point, OceanWave(vec2(0.2, 1.0), 17.0, 2.65, 0.08, 0.22));
+  height += gerstnerHeight(point, OceanWave(vec2(-1.0, 0.15), 24.0, 3.4, 0.045, 0.18));
+
   return height * oceanWaveStrength;
 }
 
 vec3 oceanNormal(vec2 point) {
-  float offset = 0.015;
+  float storm = stormAmount();
+  float offset = 0.012;
   float left = oceanHeight(point - vec2(offset, 0.0));
   float right = oceanHeight(point + vec2(offset, 0.0));
   float back = oceanHeight(point - vec2(0.0, offset));
   float front = oceanHeight(point + vec2(0.0, offset));
+  float fineRipple = noise(point * vec2(62.0, 48.0) + time * vec2(0.05, 0.11)) - 0.5;
+  float crossRipple = noise(point * vec2(118.0, 96.0) - time * vec2(0.13, 0.07)) - 0.5;
+  float stormChop = noise(point * vec2(175.0, 130.0) + time * vec2(0.28, -0.22)) - 0.5;
 
-  return normalize(vec3(left - right, offset * 2.0, back - front));
+  return normalize(vec3(
+    left - right + fineRipple * oceanWaveStrength * 0.18 + stormChop * oceanWaveStrength * storm * 0.24,
+    offset * 2.0,
+    back - front + crossRipple * oceanWaveStrength * 0.14 + stormChop * oceanWaveStrength * storm * 0.18
+  ));
 }
 
 
@@ -128,8 +164,23 @@ void main() {
   );
 
   float heightFoam = clamp(max(crestFoam, breakingFoam) * foamFromHeightStrength, 0.0, 1.0);
-  float foamMask = heightFoam;
-  float foamPattern = foamTexture(foamCoord + time * 0.015, info.ba + vec2(heightSlope));
+  float objectFoam = heightFoam * objectFoamEnabled;
+
+  float oceanCenter = oceanHeight(pos.xz);
+  float oceanFoamScale = max(0.001, oceanWaveStrength);
+  float oceanRange = oceanFoamScale * 0.7;
+  float oceanCrest = smoothstep(oceanRange * 0.55, oceanRange * 1.05, oceanCenter);
+  float oceanFoamOffset = 0.018;
+  float oceanLeft = oceanHeight(pos.xz - vec2(oceanFoamOffset, 0.0));
+  float oceanRight = oceanHeight(pos.xz + vec2(oceanFoamOffset, 0.0));
+  float oceanBack = oceanHeight(pos.xz - vec2(0.0, oceanFoamOffset));
+  float oceanFront = oceanHeight(pos.xz + vec2(0.0, oceanFoamOffset));
+  float oceanSlope = length(vec2(oceanRight - oceanLeft, oceanFront - oceanBack));
+  float oceanBreaking = smoothstep(oceanFoamScale * 0.05, oceanFoamScale * 0.22, oceanSlope);
+  float waveFoamMask = clamp(oceanCrest * oceanBreaking * waveFoamEnabled, 0.0, 1.0);
+
+  float foamMask = clamp(max(objectFoam, waveFoamMask), 0.0, 1.0);
+  float foamPattern = foamTexture(foamCoord + time * 0.015, info.ba + vec2(heightSlope + oceanSlope));
   float foam = clamp(foamMask * (0.62 + foamPattern * 0.62), 0.0, 1.0);
 
   vec3 normal = normalize(oceanNormal(pos.xz) + vec3(info.b, 0.0, info.a) * wakeWaveStrength * 1.4);

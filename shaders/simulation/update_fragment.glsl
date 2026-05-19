@@ -5,6 +5,7 @@ uniform sampler2D texture;
 uniform vec2 delta;
 uniform float rippleDistance;
 uniform float wakeHeightRecovery;
+uniform float maxWakeHeight;
 varying vec2 coord;
 
 
@@ -31,6 +32,7 @@ void main() {
   /* move the vertex along the velocity */
   info.r += info.g;
   info.r *= wakeHeightRecovery;
+  info.r = clamp(info.r, -maxWakeHeight, maxWakeHeight);
 
   gl_FragColor = info;
 }
