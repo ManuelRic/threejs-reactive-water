@@ -13,6 +13,8 @@ uniform float foamHeightSoftness;
 uniform float foamFromHeightStrength;
 uniform float objectFoamEnabled;
 uniform float waveFoamEnabled;
+uniform float extraFoamEnabled;
+uniform float extraFoamRippleBoost;
 
 varying vec3 eye;
 varying vec3 pos;
@@ -164,7 +166,13 @@ void main() {
   );
 
   float heightFoam = clamp(max(crestFoam, breakingFoam) * foamFromHeightStrength, 0.0, 1.0);
-  float objectFoam = heightFoam * objectFoamEnabled;
+  float ripplePresence = smoothstep(0.002, 0.018, abs(wakeHeight) + heightSlope * 0.8);
+  float extraRippleFoam = ripplePresence * smoothstep(0.0, foamHeightSoftness, excessHeight + heightSlope * 0.9);
+  float objectFoam = clamp(
+    (heightFoam + extraRippleFoam * extraFoamRippleBoost * extraFoamEnabled) * objectFoamEnabled,
+    0.0,
+    1.0
+  );
 
   float oceanCenter = oceanHeight(pos.xz);
   float oceanFoamScale = max(0.001, oceanWaveStrength);

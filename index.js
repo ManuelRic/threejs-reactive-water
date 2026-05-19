@@ -7,6 +7,7 @@ const toggleSphereButton = document.getElementById('toggle-sphere');
 const toggleShipButton = document.getElementById('toggle-ship');
 const toggleObjectFoamButton = document.getElementById('toggle-object-foam');
 const toggleWaveFoamButton = document.getElementById('toggle-wave-foam');
+const toggleExtraFoamButton = document.getElementById('toggle-extra-foam');
 
 const width = canvas.width;
 const height = canvas.height;
@@ -14,14 +15,19 @@ const height = canvas.height;
 // Lower values make wake waves fade sooner. Higher values let them travel farther.
 const rippleDistance = 0.92;
 const wakeHeightRecovery = 0.992;
-const maxWakeHeight = 0.045;
+const maxWakeHeight = 5;
 let oceanWaveStrength = Number(waveSizeSlider.value);
 const wakeWaveStrength = 0.75;
-const foamHeightThreshold = 0.016;
-const foamHeightSoftness = 0.03;
-const foamFromHeightStrength = 1.25;
+const normalFoamHeightThreshold = 0;
+const normalFoamHeightSoftness = 0.03;
+const normalFoamFromHeightStrength = 1.25;
+let foamHeightThreshold = normalFoamHeightThreshold;
+let foamHeightSoftness = normalFoamHeightSoftness;
+let foamFromHeightStrength = normalFoamFromHeightStrength;
 let objectFoamEnabled = 1;
 let waveFoamEnabled = 0;
+let extraFoamEnabled = 0;
+const extraFoamRippleBoost = 1.35;
 const wakeDropCount = 5;
 const wakeTrailSpacing = 0.055;
 const wakeSpread = 0.72;
@@ -32,7 +38,9 @@ const shipWakeBowOffset = 0.3;
 const shipWakeSternOffset = 0.28;
 const shipWakeBeam = 0.18;
 const shipWakeHullSamples = 4;
-const shipWakeMinVisibleSpeed = 0.28;
+const normalShipWakeMinVisibleSpeed = 0.28;
+const extraFoamShipWakeMinVisibleSpeed = 0.42;
+let shipWakeMinVisibleSpeed = normalShipWakeMinVisibleSpeed;
 const shipWakeGeometrySideBins = 11;
 const shipWakeGeometryLengthBins = 6;
 const shipWakePressureStrength = -0.010;
@@ -315,6 +323,8 @@ loadFile('shaders/utils.glsl').then((utils) => {
               foamFromHeightStrength: { value: foamFromHeightStrength },
               objectFoamEnabled: { value: objectFoamEnabled },
               waveFoamEnabled: { value: waveFoamEnabled },
+              extraFoamEnabled: { value: extraFoamEnabled },
+              extraFoamRippleBoost: { value: extraFoamRippleBoost },
               underwater: { value: false },
           },
           vertexShader: vertexShader,
@@ -976,6 +986,14 @@ class FloatingSphere {
     button.classList.toggle('is-light', !enabled);
   }
 
+  function updateFoamUniforms() {
+    if (!water.material) return;
+
+    water.material.uniforms['foamHeightThreshold'].value = foamHeightThreshold;
+    water.material.uniforms['foamHeightSoftness'].value = foamHeightSoftness;
+    water.material.uniforms['foamFromHeightStrength'].value = foamFromHeightStrength;
+  }
+
   toggleSphereButton.addEventListener('click', () => {
     floatingSphere.setVisible(!floatingSphere.visible);
     if (!floatingSphere.visible && draggedVessel === floatingSphere) {
@@ -1011,6 +1029,17 @@ class FloatingSphere {
 
     if (water.material) {
       water.material.uniforms['waveFoamEnabled'].value = waveFoamEnabled;
+    }
+  });
+
+  toggleExtraFoamButton.addEventListener('click', () => {
+    extraFoamEnabled = extraFoamEnabled > 0 ? 0 : 1;
+    shipWakeMinVisibleSpeed = extraFoamEnabled > 0 ? extraFoamShipWakeMinVisibleSpeed : normalShipWakeMinVisibleSpeed;
+
+    setToggleButtonState(toggleExtraFoamButton, extraFoamEnabled > 0);
+
+    if (water.material) {
+      water.material.uniforms['extraFoamEnabled'].value = extraFoamEnabled;
     }
   });
 
@@ -1457,6 +1486,8 @@ class FloatingSphere {
     setToggleButtonState(toggleShipButton, cargoShip.visible);
     setToggleButtonState(toggleObjectFoamButton, objectFoamEnabled > 0);
     setToggleButtonState(toggleWaveFoamButton, waveFoamEnabled > 0);
+    setToggleButtonState(toggleExtraFoamButton, extraFoamEnabled > 0);
+    updateFoamUniforms();
 
     canvas.addEventListener('mousemove', { handleEvent: onMouseMove });
     canvas.addEventListener('mousedown', { handleEvent: onMouseDown });
