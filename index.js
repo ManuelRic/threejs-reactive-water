@@ -3,6 +3,10 @@ const buoyancySlider = document.getElementById('buoyancy');
 const buoyancyValue = document.getElementById('buoyancy-value');
 const waveSizeSlider = document.getElementById('wave-size');
 const waveSizeValue = document.getElementById('wave-size-value');
+const wakeHeightSlider = document.getElementById('wake-height');
+const wakeHeightValue = document.getElementById('wake-height-value');
+const rippleLengthSlider = document.getElementById('ripple-length');
+const rippleLengthValue = document.getElementById('ripple-length-value');
 const toggleSphereButton = document.getElementById('toggle-sphere');
 const toggleShipButton = document.getElementById('toggle-ship');
 const toggleObjectFoamButton = document.getElementById('toggle-object-foam');
@@ -13,10 +17,11 @@ const width = canvas.width;
 const height = canvas.height;
 
 // Lower values make wake waves fade sooner. Higher values let them travel farther.
-const rippleDistance = 0.92;
+let rippleDistance = Number(rippleLengthSlider.value);
 const wakeHeightRecovery = 0.992;
 const maxWakeHeight = 5;
 let oceanWaveStrength = Number(waveSizeSlider.value);
+let objectWakeHeightScale = Number(wakeHeightSlider.value);
 const wakeWaveStrength = 0.75;
 const normalFoamHeightThreshold = 0;
 const normalFoamHeightSoftness = 0.03;
@@ -34,6 +39,11 @@ const wakeSpread = 0.72;
 const wakeStrength = 0.018;
 const wakeTroughStrength = -0.014;
 const wakeMinMovement = 0.006;
+const shipTrackWakeCount = 8;
+const shipTrackWakeSpacing = 0.06;
+const shipTrackWakeStrength = 0.018;
+const shipTurnWakeStrength = 0.035;
+const shipTurnWakeSensitivity = 5.5;
 const shipWakeBowOffset = 0.3;
 const shipWakeSternOffset = 0.28;
 const shipWakeBeam = 0.18;
@@ -215,6 +225,7 @@ loadFile('shaders/utils.glsl').then((utils) => {
     }
 
     stepSimulation(renderer) {
+      this._updateMesh.material.uniforms['rippleDistance'].value = rippleDistance;
       this._render(renderer, this._updateMesh);
     }
 
@@ -645,6 +656,8 @@ class FloatingSphere {
       this.draft = 0.035;
       this.targetYaw = 0;
       this.wakeEmitters = [];
+      this.wakeDirection = null;
+      this.wakeTurnAmount = 0;
       this.wakeExtents = {
         bow: shipWakeBowOffset,
         stern: shipWakeSternOffset,
@@ -981,6 +994,16 @@ class FloatingSphere {
     }
   });
 
+  wakeHeightSlider.addEventListener('input', () => {
+    objectWakeHeightScale = Number(wakeHeightSlider.value);
+    wakeHeightValue.textContent = objectWakeHeightScale.toFixed(2);
+  });
+
+  rippleLengthSlider.addEventListener('input', () => {
+    rippleDistance = Number(rippleLengthSlider.value);
+    rippleLengthValue.textContent = rippleDistance.toFixed(3);
+  });
+
   function setToggleButtonState(button, enabled) {
     button.classList.toggle('is-info', enabled);
     button.classList.toggle('is-light', !enabled);
@@ -1079,6 +1102,11 @@ class FloatingSphere {
     shipAutoNextTurnTime = time + randomRange(0.9, 2.4);
   }
 
+  function resetShipWakeDirection() {
+    cargoShip.wakeDirection = null;
+    cargoShip.wakeTurnAmount = 0;
+  }
+
   function updateAutonomousShip(time) {
     if (!cargoShip.visible || draggedVessel === cargoShip) {
       shipAutoLastTime = time;
@@ -1100,6 +1128,7 @@ class FloatingSphere {
       shipAutoTarget = randomShipAutoTarget();
       chooseShipAutoTurn(time);
       shipAutoLastWakePoint = null;
+      resetShipWakeDirection();
       return;
     }
 
@@ -1244,7 +1273,7 @@ class FloatingSphere {
       clampPoolCoordinate(x),
       clampPoolCoordinate(z),
       radius,
-      strength
+      strength * objectWakeHeightScale
     );
   }
 
@@ -1325,10 +1354,107 @@ class FloatingSphere {
     addWakeDrop(sternX, sternZ, Math.max(0.035, beam * 0.09), wakeTroughStrength * speed * 0.45);
   }
 
+  function getShipTurnAmount(directionX, directionZ) {
+    if (!cargoShip.wakeDirection) {
+      cargoShip.wakeDirection = {
+        x: directionX,
+        z: directionZ,
+      };
+      cargoShip.wakeTurnAmount = 0;
+      return 0;
+    }
+
+    const cross = cargoShip.wakeDirection.x * directionZ - cargoShip.wakeDirection.z * directionX;
+    const turnAmount = Math.max(-1, Math.min(1, cross * shipTurnWakeSensitivity));
+
+    cargoShip.wakeTurnAmount = cargoShip.wakeTurnAmount * 0.68 + turnAmount * 0.32;
+    cargoShip.wakeDirection.x = cargoShip.wakeDirection.x * 0.82 + directionX * 0.18;
+    cargoShip.wakeDirection.z = cargoShip.wakeDirection.z * 0.82 + directionZ * 0.18;
+
+    const directionLength = Math.sqrt(
+      cargoShip.wakeDirection.x * cargoShip.wakeDirection.x +
+      cargoShip.wakeDirection.z * cargoShip.wakeDirection.z
+    );
+
+    if (directionLength > 0.0001) {
+      cargoShip.wakeDirection.x /= directionLength;
+      cargoShip.wakeDirection.z /= directionLength;
+    }
+
+    return cargoShip.wakeTurnAmount;
+  }
+
+  function addShipTrackWake(toPoint, directionX, directionZ, perpendicularX, perpendicularZ, speed, turnAmount) {
+    const sternOffset = cargoShip.wakeExtents.stern;
+    const beam = cargoShip.wakeExtents.beam;
+    const turnMagnitude = Math.min(1, Math.abs(turnAmount));
+    const turnSign = turnAmount === 0 ? 0 : Math.sign(turnAmount);
+    const sternX = toPoint.x - directionX * sternOffset;
+    const sternZ = toPoint.z - directionZ * sternOffset;
+    const trackSideOffset = Math.max(beam * 0.32, 0.045);
+
+    for (let i = 0; i < shipTrackWakeCount; i++) {
+      const trail = (i + 1) * shipTrackWakeSpacing;
+      const fade = 1 - i / shipTrackWakeCount;
+      const centerX = sternX - directionX * trail;
+      const centerZ = sternZ - directionZ * trail;
+      const curve = turnSign * turnMagnitude * trail * 0.42;
+      const radius = 0.026 + i * 0.004;
+      const baseStrength = shipTrackWakeStrength * speed * fade;
+
+      addWakeDrop(
+        centerX + perpendicularX * (trackSideOffset + curve),
+        centerZ + perpendicularZ * (trackSideOffset + curve),
+        radius,
+        baseStrength * (1 + Math.max(0, turnSign) * turnMagnitude * 1.2)
+      );
+      addWakeDrop(
+        centerX - perpendicularX * (trackSideOffset - curve),
+        centerZ - perpendicularZ * (trackSideOffset - curve),
+        radius,
+        baseStrength * (1 + Math.max(0, -turnSign) * turnMagnitude * 1.2)
+      );
+      addWakeDrop(
+        centerX + perpendicularX * curve * 0.35,
+        centerZ + perpendicularZ * curve * 0.35,
+        radius * 1.35,
+        wakeTroughStrength * speed * fade * 0.42
+      );
+    }
+  }
+
+  function addShipTurnWake(toPoint, directionX, directionZ, perpendicularX, perpendicularZ, speed, turnAmount) {
+    const turnMagnitude = Math.min(1, Math.abs(turnAmount));
+    if (turnMagnitude < 0.08) return;
+
+    const turnSign = Math.sign(turnAmount);
+    const sternOffset = cargoShip.wakeExtents.stern;
+    const beam = cargoShip.wakeExtents.beam;
+    const sternX = toPoint.x - directionX * sternOffset;
+    const sternZ = toPoint.z - directionZ * sternOffset;
+
+    for (let i = 0; i < shipTrackWakeCount; i++) {
+      const trail = (i + 0.7) * shipTrackWakeSpacing;
+      const fade = 1 - i / shipTrackWakeCount;
+      const side = beam * 0.45 + trail * (0.18 + turnMagnitude * 0.55);
+      const arcX = sternX - directionX * trail + perpendicularX * side * turnSign;
+      const arcZ = sternZ - directionZ * trail + perpendicularZ * side * turnSign;
+      const radius = 0.032 + i * 0.006;
+
+      addWakeDrop(
+        arcX,
+        arcZ,
+        radius,
+        shipTurnWakeStrength * speed * turnMagnitude * fade
+      );
+    }
+  }
+
   function addTrailingKelvinWake(vessel, fromPoint, toPoint, directionX, directionZ, perpendicularX, perpendicularZ, speed) {
     const originOffset = vessel === cargoShip ? cargoShip.wakeExtents.stern : floatingSphere.radius * 0.95;
     const originX = toPoint.x - directionX * originOffset;
     const originZ = toPoint.z - directionZ * originOffset;
+    const turnMagnitude = vessel === cargoShip ? Math.min(1, Math.abs(cargoShip.wakeTurnAmount)) : 0;
 
     for (let i = 1; i <= wakeDropCount; i++) {
       const trail = i * wakeTrailSpacing;
@@ -1337,7 +1463,7 @@ class FloatingSphere {
       const baseX = originX - directionX * trail;
       const baseZ = originZ - directionZ * trail;
       const radius = 0.026 + i * 0.005;
-      const vesselWakeScale = vessel === cargoShip ? 0.55 : 1;
+      const vesselWakeScale = vessel === cargoShip ? 0.35 * (1 - turnMagnitude * 0.45) : 1;
       const crestStrength = wakeStrength * speed * fade * vesselWakeScale;
       const troughStrength = wakeTroughStrength * speed * fade * vesselWakeScale;
 
@@ -1377,7 +1503,10 @@ class FloatingSphere {
     const wakeSpeed = vessel === cargoShip ? Math.max(speed, shipWakeMinVisibleSpeed) : speed;
 
     if (vessel === cargoShip) {
+      const turnAmount = getShipTurnAmount(directionX, directionZ);
       addShipGeometryWake(fromPoint, toPoint, directionX, directionZ, perpendicularX, perpendicularZ, wakeSpeed);
+      addShipTrackWake(toPoint, directionX, directionZ, perpendicularX, perpendicularZ, wakeSpeed, turnAmount);
+      addShipTurnWake(toPoint, directionX, directionZ, perpendicularX, perpendicularZ, wakeSpeed, turnAmount);
     } else {
       addSphereWake(fromPoint, toPoint, directionX, directionZ, perpendicularX, perpendicularZ, speed);
     }
@@ -1441,6 +1570,7 @@ class FloatingSphere {
     if (draggedVessel === cargoShip) {
       shipAutoTarget = null;
       shipAutoLastWakePoint = null;
+      resetShipWakeDirection();
     }
     const vesselPoint = getVesselPoint(draggedVessel);
     draggedVesselOffset = {
@@ -1460,6 +1590,7 @@ class FloatingSphere {
         shipAutoTarget = null;
         shipAutoLastTime = null;
         shipAutoLastWakePoint = null;
+        resetShipWakeDirection();
       }
       draggedVessel = null;
       draggedVesselOffset = { x: 0, z: 0 };
@@ -1482,6 +1613,8 @@ class FloatingSphere {
 
   Promise.all(loaded).then(() => {
     waveSizeValue.textContent = oceanWaveStrength.toFixed(3);
+    wakeHeightValue.textContent = objectWakeHeightScale.toFixed(2);
+    rippleLengthValue.textContent = rippleDistance.toFixed(3);
     setToggleButtonState(toggleSphereButton, floatingSphere.visible);
     setToggleButtonState(toggleShipButton, cargoShip.visible);
     setToggleButtonState(toggleObjectFoamButton, objectFoamEnabled > 0);
