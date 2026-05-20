@@ -5,6 +5,12 @@ const shipBuoyancySlider = document.getElementById('ship-buoyancy');
 const shipBuoyancyValue = document.getElementById('ship-buoyancy-value');
 const waveSizeSlider = document.getElementById('wave-size');
 const waveSizeValue = document.getElementById('wave-size-value');
+const waveFrequencySlider = document.getElementById('wave-frequency');
+const waveFrequencyValue = document.getElementById('wave-frequency-value');
+const waveSpeedSlider = document.getElementById('wave-speed');
+const waveSpeedValue = document.getElementById('wave-speed-value');
+const waveSharpnessSlider = document.getElementById('wave-sharpness');
+const waveSharpnessValue = document.getElementById('wave-sharpness-value');
 const wakeHeightSlider = document.getElementById('wake-height');
 const wakeHeightValue = document.getElementById('wake-height-value');
 const rippleLengthSlider = document.getElementById('ripple-length');
@@ -35,6 +41,9 @@ let waterOpacity = Number(waterOpacitySlider.value);
 const wakeHeightRecovery = 0.992;
 const maxWakeHeight = 5;
 let oceanWaveStrength = Number(waveSizeSlider.value);
+let oceanWaveFrequency = Number(waveFrequencySlider.value);
+let oceanWaveSpeed = Number(waveSpeedSlider.value);
+let oceanWaveSharpness = Number(waveSharpnessSlider.value);
 let objectWakeHeightScale = Number(wakeHeightSlider.value);
 const wakeWaveStrength = 0.75;
 const normalFoamHeightThreshold = 0;
@@ -46,7 +55,8 @@ let foamFromHeightStrength = normalFoamFromHeightStrength;
 let objectFoamEnabled = 1;
 let waveFoamEnabled = 0;
 let extraFoamEnabled = 0;
-let foamTextureEnabled = 1;
+let foamMottleEnabled = 1;
+let waterMottleEnabled = 0;
 let waterTextureEnabled = 1;
 let wireframeEnabled = false;
 const extraFoamRippleBoost = 0;
@@ -72,8 +82,10 @@ const shipWakeGeometrySideBins = 11;
 const shipWakeGeometryLengthBins = 6;
 const shipWakePressureStrength = -0.010;
 const shipWakeEmitterStrength = 0.010;
+const shipWakeReferenceLength = shipWakeBowOffset + shipWakeSternOffset;
+const shipWakeReferenceBeam = shipWakeBeam;
 const shipModelYawOffset = 2*Math.PI;
-const shipMovementYawOffset = 0;
+const shipMovementYawOffset = Math.PI / 2;
 const shipAutopilotSpeed = 0.18;
 const shipAutopilotTurnBiasMax = 0.45;
 const shipAutopilotTargetRadius = 0.12;
@@ -389,6 +401,9 @@ loadFile('shaders/utils.glsl').then((utils) => {
               waterOpacity: { value: waterOpacity },
               time: { value: 0 },
               oceanWaveStrength: { value: oceanWaveStrength },
+              oceanWaveFrequency: { value: oceanWaveFrequency },
+              oceanWaveSpeed: { value: oceanWaveSpeed },
+              oceanWaveSharpness: { value: oceanWaveSharpness },
               wakeWaveStrength: { value: wakeWaveStrength },
               waterTextureEnabled: { value: waterTextureEnabled },
               foamHeightThreshold: { value: foamHeightThreshold },
@@ -397,7 +412,8 @@ loadFile('shaders/utils.glsl').then((utils) => {
               objectFoamEnabled: { value: objectFoamEnabled },
               waveFoamEnabled: { value: waveFoamEnabled },
               extraFoamEnabled: { value: extraFoamEnabled },
-              foamTextureEnabled: { value: foamTextureEnabled },
+              foamMottleEnabled: { value: foamMottleEnabled },
+              waterMottleEnabled: { value: waterMottleEnabled },
               extraFoamRippleBoost: { value: extraFoamRippleBoost },
               underwater: { value: false },
           },
@@ -757,6 +773,7 @@ class FloatingSphere {
         stern: shipWakeSternOffset,
         beam: shipWakeBeam,
       };
+      this.wakeProfile = this.createWakeProfile(this.wakeExtents);
       this.group = new THREE.Group();
       this.modelRoot = new THREE.Group();
       this.group.add(this.modelRoot);
@@ -783,12 +800,12 @@ class FloatingSphere {
         }
 
         const loader = new THREE.GLTFLoader();
-        loader.load('models/tug_boat_02.glb', (gltf) => {
+        loader.load('models/cargo_03.glb', (gltf) => {
           const model = gltf.scene;
           const originalBox = new THREE.Box3().setFromObject(model);
           const originalSize = originalBox.getSize(new THREE.Vector3());
           const maxDeckSize = Math.max(originalSize.x, originalSize.z);
-          const scale = 0.02;
+          const scale = 0.1;
 
           model.scale.setScalar(scale);
           this.modelRoot.add(model);
@@ -840,6 +857,30 @@ class FloatingSphere {
         1,
         Math.max(0.35, (this.wakeExtents.bow + this.wakeExtents.stern) * 1.25)
       );
+    }
+
+    createWakeProfile(extents) {
+      const length = Math.max(0.001, extents.bow + extents.stern);
+      const beam = Math.max(0.001, extents.beam);
+      const lengthScale = Math.max(0.35, Math.min(2.6, length / shipWakeReferenceLength));
+      const beamScale = Math.max(0.35, Math.min(2.6, beam / shipWakeReferenceBeam));
+      const sizeScale = Math.sqrt(lengthScale * beamScale);
+
+      return {
+        length,
+        beam,
+        sizeScale,
+        hullSamples: Math.max(3, Math.min(9, Math.round(shipWakeHullSamples * lengthScale))),
+        trackWakeCount: Math.max(4, Math.min(14, Math.round(shipTrackWakeCount * lengthScale))),
+        kelvinWakeCount: Math.max(3, Math.min(12, Math.round(wakeDropCount * lengthScale))),
+        trackWakeSpacing: shipTrackWakeSpacing * Math.max(0.45, Math.min(2.1, lengthScale)),
+        kelvinWakeSpacing: wakeTrailSpacing * Math.max(0.45, Math.min(2.1, lengthScale)),
+        trackSideOffset: Math.max(beam * 0.32, 0.045 * beamScale),
+        baseTrackRadius: Math.max(0.014, Math.min(0.065, beam * 0.14)),
+        baseTurnRadius: Math.max(0.018, Math.min(0.085, beam * 0.18)),
+        bowRadius: Math.max(0.014, Math.min(0.06, beam * 0.12)),
+        sternRadius: Math.max(0.018, Math.min(0.08, beam * 0.18)),
+      };
     }
 
     collectFootprintPoints(model) {
@@ -985,18 +1026,19 @@ class FloatingSphere {
         stern: Math.max(shipWakeSternOffset * 0.5, centerForward - forwardMin),
         beam: Math.max(shipWakeBeam * 0.5, beam),
       };
+      this.wakeProfile = this.createWakeProfile(this.wakeExtents);
 
       this.wakeEmitters = [
         ...bowEmitters.map((point) => ({
           forward: point.forward - centerForward,
           side: point.side - centerSide,
-          radius: Math.max(0.018, this.wakeExtents.beam * 0.045),
+          radius: Math.max(0.018, this.wakeProfile.bowRadius * 0.75),
           strength: shipWakeEmitterStrength,
         })),
         ...sideEmitters.map((point) => ({
           forward: point.forward - centerForward,
           side: point.side - centerSide,
-          radius: Math.max(0.015, this.wakeExtents.beam * 0.035),
+          radius: Math.max(0.015, this.wakeProfile.bowRadius * 0.58),
           strength: shipWakeEmitterStrength * 0.55,
         })),
       ];
@@ -1151,6 +1193,37 @@ class FloatingSphere {
     cargoShip.requestFloatReset();
   });
 
+  waveFrequencySlider.addEventListener('input', () => {
+    oceanWaveFrequency = Number(waveFrequencySlider.value);
+    waveFrequencyValue.textContent = oceanWaveFrequency.toFixed(2);
+
+    if (water.material) {
+      water.material.uniforms['oceanWaveFrequency'].value = oceanWaveFrequency;
+    }
+
+    cargoShip.requestFloatReset();
+  });
+
+  waveSpeedSlider.addEventListener('input', () => {
+    oceanWaveSpeed = Number(waveSpeedSlider.value);
+    waveSpeedValue.textContent = oceanWaveSpeed.toFixed(2);
+
+    if (water.material) {
+      water.material.uniforms['oceanWaveSpeed'].value = oceanWaveSpeed;
+    }
+  });
+
+  waveSharpnessSlider.addEventListener('input', () => {
+    oceanWaveSharpness = Number(waveSharpnessSlider.value);
+    waveSharpnessValue.textContent = oceanWaveSharpness.toFixed(2);
+
+    if (water.material) {
+      water.material.uniforms['oceanWaveSharpness'].value = oceanWaveSharpness;
+    }
+
+    cargoShip.requestFloatReset();
+  });
+
   wakeHeightSlider.addEventListener('input', () => {
     objectWakeHeightScale = Number(wakeHeightSlider.value);
     wakeHeightValue.textContent = objectWakeHeightScale.toFixed(2);
@@ -1295,20 +1368,20 @@ class FloatingSphere {
   });
 
   toggleFoamTextureButton.addEventListener('click', () => {
-    foamTextureEnabled = foamTextureEnabled > 0 ? 0 : 1;
-    setToggleButtonState(toggleFoamTextureButton, foamTextureEnabled > 0);
+    foamMottleEnabled = foamMottleEnabled > 0 ? 0 : 1;
+    setToggleButtonState(toggleFoamTextureButton, foamMottleEnabled > 0);
 
     if (water.material) {
-      water.material.uniforms['foamTextureEnabled'].value = foamTextureEnabled;
+      water.material.uniforms['foamMottleEnabled'].value = foamMottleEnabled;
     }
   });
 
   toggleWaterTextureButton.addEventListener('click', () => {
-    waterTextureEnabled = waterTextureEnabled > 0 ? 0 : 1;
-    setToggleButtonState(toggleWaterTextureButton, waterTextureEnabled > 0);
+    waterMottleEnabled = waterMottleEnabled > 0 ? 0 : 1;
+    setToggleButtonState(toggleWaterTextureButton, waterMottleEnabled > 0);
 
     if (water.material) {
-      water.material.uniforms['waterTextureEnabled'].value = waterTextureEnabled;
+      water.material.uniforms['waterMottleEnabled'].value = waterMottleEnabled;
     }
   });
 
@@ -1539,7 +1612,10 @@ class FloatingSphere {
     const length = Math.sqrt(directionX * directionX + directionZ * directionZ);
     const normalizedX = directionX / length;
     const normalizedZ = directionZ / length;
-    const crest = Math.sin((pointX * normalizedX + pointZ * normalizedZ) * frequency + time * speed);
+    const crest = Math.sin(
+      (pointX * normalizedX + pointZ * normalizedZ) * frequency * oceanWaveFrequency +
+      time * speed * oceanWaveSpeed
+    );
     const storm = Math.min(1, Math.max(0, (oceanWaveStrength - 0.08) / 0.04));
     const easedStorm = storm * storm * (3 - 2 * storm);
     const positiveCrest = Math.max(crest, 0);
@@ -1547,8 +1623,8 @@ class FloatingSphere {
 
     return (
       crest +
-      Math.pow(positiveCrest, 3) * easedStorm * 0.85 -
-      Math.pow(negativeCrest, 2) * easedStorm * 0.16
+      Math.pow(positiveCrest, 3) * easedStorm * 0.85 * oceanWaveSharpness -
+      Math.pow(negativeCrest, 2) * easedStorm * 0.16 * oceanWaveSharpness
     ) * amplitude;
   }
 
@@ -1668,6 +1744,7 @@ class FloatingSphere {
     const bowOffset = cargoShip.wakeExtents.bow;
     const sternOffset = cargoShip.wakeExtents.stern;
     const beam = cargoShip.wakeExtents.beam;
+    const profile = cargoShip.wakeProfile;
     const bowX = toPoint.x + directionX * bowOffset;
     const bowZ = toPoint.z + directionZ * bowOffset;
     const sternX = toPoint.x - directionX * sternOffset;
@@ -1678,22 +1755,22 @@ class FloatingSphere {
       : 1;
 
     if (cargoShip.wakeEmitters.length === 0) {
-      addWakeDrop(bowX, bowZ, 0.035, wakeTroughStrength * speed);
+      addWakeDrop(bowX, bowZ, profile.bowRadius, wakeTroughStrength * speed);
       addWakeDrop(
         bowX + perpendicularX * beam * 0.48,
         bowZ + perpendicularZ * beam * 0.48,
-        0.026,
+        profile.bowRadius * 0.75,
         wakeStrength * speed
       );
       addWakeDrop(
         bowX - perpendicularX * beam * 0.48,
         bowZ - perpendicularZ * beam * 0.48,
-        0.026,
+        profile.bowRadius * 0.75,
         wakeStrength * speed
       );
     } else {
-      for (let i = 0; i < shipWakeHullSamples; i++) {
-        const t = shipWakeHullSamples === 1 ? 0.5 : i / (shipWakeHullSamples - 1);
+      for (let i = 0; i < profile.hullSamples; i++) {
+        const t = profile.hullSamples === 1 ? 0.5 : i / (profile.hullSamples - 1);
         const hullX = bowX - directionX * hullLength * t;
         const hullZ = bowZ - directionZ * hullLength * t;
         const fade = 1 - Math.abs(t - 0.45) * 0.55;
@@ -1701,7 +1778,7 @@ class FloatingSphere {
         addWakeDrop(
           hullX,
           hullZ,
-          Math.max(0.035, beam * 0.16),
+          profile.sternRadius,
           shipWakePressureStrength * speed * fade
         );
       }
@@ -1716,10 +1793,10 @@ class FloatingSphere {
         addWakeDrop(emitterX, emitterZ, emitter.radius, strength);
       }
 
-      addWakeDrop(bowX, bowZ, Math.max(0.022, beam * 0.045), wakeTroughStrength * speed * 0.9);
+      addWakeDrop(bowX, bowZ, profile.bowRadius, wakeTroughStrength * speed * 0.9);
     }
 
-    addWakeDrop(sternX, sternZ, Math.max(0.035, beam * 0.09), wakeTroughStrength * speed * 0.45);
+    addWakeDrop(sternX, sternZ, profile.sternRadius, wakeTroughStrength * speed * 0.45);
   }
 
   function getShipTurnAmount(directionX, directionZ) {
@@ -1759,15 +1836,16 @@ class FloatingSphere {
     const turnSign = turnAmount === 0 ? 0 : Math.sign(turnAmount);
     const sternX = toPoint.x - directionX * sternOffset;
     const sternZ = toPoint.z - directionZ * sternOffset;
-    const trackSideOffset = Math.max(beam * 0.32, 0.045);
+    const profile = cargoShip.wakeProfile;
+    const trackSideOffset = profile.trackSideOffset;
 
-    for (let i = 0; i < shipTrackWakeCount; i++) {
-      const trail = (i + 1) * shipTrackWakeSpacing;
-      const fade = 1 - i / shipTrackWakeCount;
+    for (let i = 0; i < profile.trackWakeCount; i++) {
+      const trail = (i + 1) * profile.trackWakeSpacing;
+      const fade = 1 - i / profile.trackWakeCount;
       const centerX = sternX - directionX * trail;
       const centerZ = sternZ - directionZ * trail;
       const curve = turnSign * turnMagnitude * trail * 0.42;
-      const radius = 0.026 + i * 0.004;
+      const radius = profile.baseTrackRadius + i * profile.baseTrackRadius * 0.15;
       const baseStrength = shipTrackWakeStrength * speed * fade;
 
       addWakeDrop(
@@ -1798,16 +1876,17 @@ class FloatingSphere {
     const turnSign = Math.sign(turnAmount);
     const sternOffset = cargoShip.wakeExtents.stern;
     const beam = cargoShip.wakeExtents.beam;
+    const profile = cargoShip.wakeProfile;
     const sternX = toPoint.x - directionX * sternOffset;
     const sternZ = toPoint.z - directionZ * sternOffset;
 
-    for (let i = 0; i < shipTrackWakeCount; i++) {
-      const trail = (i + 0.7) * shipTrackWakeSpacing;
-      const fade = 1 - i / shipTrackWakeCount;
+    for (let i = 0; i < profile.trackWakeCount; i++) {
+      const trail = (i + 0.7) * profile.trackWakeSpacing;
+      const fade = 1 - i / profile.trackWakeCount;
       const side = beam * 0.45 + trail * (0.18 + turnMagnitude * 0.55);
       const arcX = sternX - directionX * trail + perpendicularX * side * turnSign;
       const arcZ = sternZ - directionZ * trail + perpendicularZ * side * turnSign;
-      const radius = 0.032 + i * 0.006;
+      const radius = profile.baseTurnRadius + i * profile.baseTurnRadius * 0.17;
 
       addWakeDrop(
         arcX,
@@ -1823,14 +1902,18 @@ class FloatingSphere {
     const originX = toPoint.x - directionX * originOffset;
     const originZ = toPoint.z - directionZ * originOffset;
     const turnMagnitude = vessel === cargoShip ? Math.min(1, Math.abs(cargoShip.wakeTurnAmount)) : 0;
+    const wakeCount = vessel === cargoShip ? cargoShip.wakeProfile.kelvinWakeCount : wakeDropCount;
+    const trailSpacing = vessel === cargoShip ? cargoShip.wakeProfile.kelvinWakeSpacing : wakeTrailSpacing;
+    const baseRadius = vessel === cargoShip ? cargoShip.wakeProfile.baseTrackRadius : 0.026;
+    const radiusGrowth = vessel === cargoShip ? cargoShip.wakeProfile.baseTrackRadius * 0.16 : 0.005;
 
-    for (let i = 1; i <= wakeDropCount; i++) {
-      const trail = i * wakeTrailSpacing;
+    for (let i = 1; i <= wakeCount; i++) {
+      const trail = i * trailSpacing;
       const spread = trail * wakeSpread;
-      const fade = 1 - (i - 1) / wakeDropCount;
+      const fade = 1 - (i - 1) / wakeCount;
       const baseX = originX - directionX * trail;
       const baseZ = originZ - directionZ * trail;
-      const radius = 0.026 + i * 0.005;
+      const radius = baseRadius + i * radiusGrowth;
       const vesselWakeScale = vessel === cargoShip ? 0.35 * (1 - turnMagnitude * 0.45) : 1;
       const crestStrength = wakeStrength * speed * fade * vesselWakeScale;
       const troughStrength = wakeTroughStrength * speed * fade * vesselWakeScale;
@@ -1856,7 +1939,7 @@ class FloatingSphere {
     }
   }
 
-  function addMovementWake(vessel, fromPoint, toPoint) {
+  function addMovementWake(vessel, fromPoint, toPoint, wakeSpeedOverride = null) {
     const dx = toPoint.x - fromPoint.x;
     const dz = toPoint.z - fromPoint.z;
     const distance = Math.sqrt(dx * dx + dz * dz);
@@ -1868,7 +1951,8 @@ class FloatingSphere {
     const perpendicularX = -directionZ;
     const perpendicularZ = directionX;
     const speed = Math.min(1, distance / 0.08);
-    const wakeSpeed = vessel === cargoShip ? Math.max(speed, shipWakeMinVisibleSpeed) : speed;
+    const movementSpeed = wakeSpeedOverride === null ? speed : wakeSpeedOverride;
+    const wakeSpeed = vessel === cargoShip ? Math.max(movementSpeed, shipWakeMinVisibleSpeed) : speed;
 
     if (vessel === cargoShip) {
       const turnAmount = getShipTurnAmount(directionX, directionZ);
@@ -1989,6 +2073,9 @@ class FloatingSphere {
     buoyancyValue.textContent = Number(buoyancySlider.value).toFixed(2);
     shipBuoyancyValue.textContent = Number(shipBuoyancySlider.value).toFixed(2);
     waveSizeValue.textContent = oceanWaveStrength.toFixed(3);
+    waveFrequencyValue.textContent = oceanWaveFrequency.toFixed(2);
+    waveSpeedValue.textContent = oceanWaveSpeed.toFixed(2);
+    waveSharpnessValue.textContent = oceanWaveSharpness.toFixed(2);
     wakeHeightValue.textContent = objectWakeHeightScale.toFixed(2);
     rippleLengthValue.textContent = rippleDistance.toFixed(3);
     reflectionStrengthValue.textContent = reflectionStrength.toFixed(2);
@@ -1999,8 +2086,8 @@ class FloatingSphere {
     setToggleButtonState(toggleObjectFoamButton, objectFoamEnabled > 0);
     setToggleButtonState(toggleWaveFoamButton, waveFoamEnabled > 0);
     setToggleButtonState(toggleExtraFoamButton, extraFoamEnabled > 0);
-    setToggleButtonState(toggleFoamTextureButton, foamTextureEnabled > 0);
-    setToggleButtonState(toggleWaterTextureButton, waterTextureEnabled > 0);
+    setToggleButtonState(toggleFoamTextureButton, foamMottleEnabled > 0);
+    setToggleButtonState(toggleWaterTextureButton, waterMottleEnabled > 0);
     setToggleButtonState(toggleWireframeButton, wireframeEnabled);
     applyWireframeMode();
     updateFoamUniforms();

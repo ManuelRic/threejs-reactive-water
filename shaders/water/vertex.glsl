@@ -4,6 +4,9 @@ uniform sampler2D water;
 uniform mat4 reflectionTextureMatrix;
 uniform float time;
 uniform float oceanWaveStrength;
+uniform float oceanWaveFrequency;
+uniform float oceanWaveSpeed;
+uniform float oceanWaveSharpness;
 uniform float wakeWaveStrength;
 uniform float waterTextureEnabled;
 
@@ -29,16 +32,18 @@ float sharpenCrest(float crest, float storm) {
   float positiveCrest = max(crest, 0.0);
   float negativeCrest = max(-crest, 0.0);
 
-  return crest + pow(positiveCrest, 3.0) * storm * 0.85 - pow(negativeCrest, 2.0) * storm * 0.16;
+  return crest +
+    pow(positiveCrest, 3.0) * storm * 0.85 * oceanWaveSharpness -
+    pow(negativeCrest, 2.0) * storm * 0.16 * oceanWaveSharpness;
 }
 
 vec3 gerstnerWave(vec2 point, OceanWave wave) {
   vec2 direction = normalize(wave.direction);
-  float phase = dot(point, direction) * wave.frequency + time * wave.speed;
+  float phase = dot(point, direction) * wave.frequency * oceanWaveFrequency + time * wave.speed * oceanWaveSpeed;
   float crest = sin(phase);
   float storm = stormAmount();
   float shapedCrest = sharpenCrest(crest, storm);
-  float horizontal = cos(phase) * wave.steepness * wave.amplitude * (1.0 + storm * 0.55);
+  float horizontal = cos(phase) * wave.steepness * wave.amplitude * oceanWaveSharpness * (1.0 + storm * 0.55);
 
   return vec3(
     direction.x * horizontal,

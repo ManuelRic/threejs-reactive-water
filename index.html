@@ -63,8 +63,20 @@
         <input id="ship-buoyancy" class="slider is-fullwidth" type="range" min="0" max="2" step="0.01" value="1">
       </div>
       <div class="buoyancy-control">
-        <label for="wave-size">Wave size: <span id="wave-size-value">0.035</span></label>
+        <label for="wave-size">Wave amplitude: <span id="wave-size-value">0.035</span></label>
         <input id="wave-size" class="slider is-fullwidth" type="range" min="0" max="0.12" step="0.001" value="0.035">
+      </div>
+      <div class="buoyancy-control">
+        <label for="wave-frequency">Wave frequency: <span id="wave-frequency-value">1.00</span></label>
+        <input id="wave-frequency" class="slider is-fullwidth" type="range" min="0.2" max="3" step="0.01" value="1">
+      </div>
+      <div class="buoyancy-control">
+        <label for="wave-speed">Wave speed: <span id="wave-speed-value">1.00</span></label>
+        <input id="wave-speed" class="slider is-fullwidth" type="range" min="0" max="3" step="0.01" value="1">
+      </div>
+      <div class="buoyancy-control">
+        <label for="wave-sharpness">Wave sharpness: <span id="wave-sharpness-value">1.00</span></label>
+        <input id="wave-sharpness" class="slider is-fullwidth" type="range" min="0" max="2.5" step="0.01" value="1">
       </div>
       <div class="buoyancy-control">
         <label for="wake-height">Wake height: <span id="wake-height-value">1.00</span></label>
@@ -91,8 +103,8 @@
         <button id="toggle-object-foam" class="button is-small is-info" type="button">Object foam</button>
         <button id="toggle-wave-foam" class="button is-small is-light" type="button">Wave foam</button>
         <button id="toggle-extra-foam" class="button is-small is-light" type="button">Extra foam</button>
-        <button id="toggle-foam-texture" class="button is-small is-info" type="button">Foam texture</button>
-        <button id="toggle-water-texture" class="button is-small is-info" type="button">Water texture</button>
+        <button id="toggle-foam-texture" class="button is-small is-info" type="button">Foam mottle</button>
+        <button id="toggle-water-texture" class="button is-small is-light" type="button">Water mottle</button>
         <button id="toggle-wireframe" class="button is-small is-light" type="button">Wireframe</button>
       </div>
     </div>
