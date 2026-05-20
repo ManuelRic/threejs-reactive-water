@@ -45,6 +45,7 @@
 
       .model-toggles {
         display: flex;
+        flex-wrap: wrap;
         gap: 8px;
       }
     </style>
@@ -77,12 +78,21 @@
         <label for="reflection-strength">Reflection: <span id="reflection-strength-value">1.25</span></label>
         <input id="reflection-strength" class="slider is-fullwidth" type="range" min="0" max="5" step="0.01" value="1.25">
       </div>
+      <div class="buoyancy-control">
+        <label for="water-opacity">Water opacity: <span id="water-opacity-value">0.55</span></label>
+        <input id="water-opacity" class="slider is-fullwidth" type="range" min="0.05" max="1" step="0.01" value="0.55">
+      </div>
       <div class="model-toggles">
         <button id="toggle-sphere" class="button is-small is-info" type="button">Sphere</button>
         <button id="toggle-ship" class="button is-small is-info" type="button">Ship</button>
+        <button id="ship-mode-random" class="button is-small is-info" type="button">Random</button>
+        <button id="ship-mode-circle" class="button is-small is-light" type="button">Circle</button>
+        <button id="ship-mode-stopped" class="button is-small is-light" type="button">Stopped</button>
         <button id="toggle-object-foam" class="button is-small is-info" type="button">Object foam</button>
         <button id="toggle-wave-foam" class="button is-small is-light" type="button">Wave foam</button>
         <button id="toggle-extra-foam" class="button is-small is-light" type="button">Extra foam</button>
+        <button id="toggle-foam-texture" class="button is-small is-info" type="button">Foam texture</button>
+        <button id="toggle-water-texture" class="button is-small is-info" type="button">Water texture</button>
         <button id="toggle-wireframe" class="button is-small is-light" type="button">Wireframe</button>
       </div>
     </div>

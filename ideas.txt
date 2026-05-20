@@ -1,4 +1,5 @@
 add a value that determines the basic wave height, this way, if we register high wave height the foam will appear, 
+
 giving the visual effect of a wavy day automatically.
 
 make the wave be formed with a greater hight with less movement
@@ -10,3 +11,14 @@ sliders to play with frequency, amplitude, etc. => create different types of wav
 could having the same bouyancy behavior as the sohere work?
 
 add wireframe to comprehend and adapt features
+
+droplets interfear with realistic object mesh effect
+
+if (object_category == boat){
+    center of object + moving direction data from AIS => foam trail opposite direction
+}
+
+technically, calculating the weight of the object I can calculate the amount of water that should be displaced
+
+still need to implement foam to wave above x height, or outside of how untochued wave structure would be
+

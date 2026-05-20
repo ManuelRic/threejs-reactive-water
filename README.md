@@ -8,4 +8,4 @@ You can find another implementation of the caustics computation here: https://gi
 
 Tile texture from [zooboing](https://www.flickr.com/photos/zooboing/3682834083) on [Flickr](https://www.flickr.com).
 
-![Water](water.png)
+![Water](Captura de pantalla 2026-05-20 094051.png)

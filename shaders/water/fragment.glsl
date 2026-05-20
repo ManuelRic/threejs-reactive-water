@@ -9,12 +9,15 @@ uniform sampler2D reflectionTexture;
 uniform float time;
 uniform float oceanWaveStrength;
 uniform float wakeWaveStrength;
+uniform float waterTextureEnabled;
+uniform float waterOpacity;
 uniform float foamHeightThreshold;
 uniform float foamHeightSoftness;
 uniform float foamFromHeightStrength;
 uniform float objectFoamEnabled;
 uniform float waveFoamEnabled;
 uniform float extraFoamEnabled;
+uniform float foamTextureEnabled;
 uniform float extraFoamRippleBoost;
 uniform float reflectionStrength;
 
@@ -72,8 +75,8 @@ float foamTexture(vec2 coord, vec2 direction) {
   float fine = noise(stretchedCoord * vec2(95.0, 70.0));
   float specks = noise(stretchedCoord * 180.0);
 
-  float cells = smoothstep(0.34, 0.78, broad + fine * 0.45);
-  float flecks = smoothstep(0.62, 0.95, specks);
+  float cells = smoothstep(0.58, 0.64, broad + fine * 0.45);
+  float flecks = smoothstep(0.82, 0.88, specks);
 
   return clamp(cells + flecks * 0.45, 0.0, 1.0);
 }
@@ -128,20 +131,16 @@ float oceanHeight(vec2 point) {
 }
 
 vec3 oceanNormal(vec2 point) {
-  float storm = stormAmount();
   float offset = 0.012;
   float left = oceanHeight(point - vec2(offset, 0.0));
   float right = oceanHeight(point + vec2(offset, 0.0));
   float back = oceanHeight(point - vec2(0.0, offset));
   float front = oceanHeight(point + vec2(0.0, offset));
-  float fineRipple = noise(point * vec2(62.0, 48.0) + time * vec2(0.05, 0.11)) - 0.5;
-  float crossRipple = noise(point * vec2(118.0, 96.0) - time * vec2(0.13, 0.07)) - 0.5;
-  float stormChop = noise(point * vec2(175.0, 130.0) + time * vec2(0.28, -0.22)) - 0.5;
 
   return normalize(vec3(
-    left - right + fineRipple * oceanWaveStrength * 0.18 + stormChop * oceanWaveStrength * storm * 0.24,
+    left - right,
     offset * 2.0,
-    back - front + crossRipple * oceanWaveStrength * 0.14 + stormChop * oceanWaveStrength * storm * 0.18
+    back - front
   ));
 }
 
@@ -154,11 +153,12 @@ void main() {
 
   /* make water look more "peaked" */
   for (int i = 0; i < 5; i++) {
-    coord += info.ba * 0.005;
+    coord += info.ba * 0.005 * waterTextureEnabled;
     info = texture2D(water, coord);
   }
 
-  float wakeHeight = heightInfo.r * wakeWaveStrength;
+  float wakeTextureStrength = wakeWaveStrength * waterTextureEnabled;
+  float wakeHeight = heightInfo.r * wakeTextureStrength;
   float excessHeight = max(0.0, wakeHeight);
   float crestFoam = smoothstep(
     foamHeightThreshold,
@@ -167,21 +167,28 @@ void main() {
   );
 
   float texel = 1.0 / 256.0;
-  float leftHeight = texture2D(water, foamCoord - vec2(texel, 0.0)).r * wakeWaveStrength;
-  float rightHeight = texture2D(water, foamCoord + vec2(texel, 0.0)).r * wakeWaveStrength;
-  float backHeight = texture2D(water, foamCoord - vec2(0.0, texel)).r * wakeWaveStrength;
-  float frontHeight = texture2D(water, foamCoord + vec2(0.0, texel)).r * wakeWaveStrength;
+  float leftHeight = texture2D(water, foamCoord - vec2(texel, 0.0)).r * wakeTextureStrength;
+  float rightHeight = texture2D(water, foamCoord + vec2(texel, 0.0)).r * wakeTextureStrength;
+  float backHeight = texture2D(water, foamCoord - vec2(0.0, texel)).r * wakeTextureStrength;
+  float frontHeight = texture2D(water, foamCoord + vec2(0.0, texel)).r * wakeTextureStrength;
   float heightSlope = length(vec2(rightHeight - leftHeight, frontHeight - backHeight));
+  float wakeVelocity = heightInfo.g * wakeTextureStrength;
+  float forwardBreak = smoothstep(0.00018, 0.0045, -wakeVelocity);
+  float reverseBreak = smoothstep(0.00018, 0.0045, wakeVelocity) * 0.55;
+  float leadingFace = max(forwardBreak, reverseBreak);
+  float crestBias = smoothstep(-0.009, 0.009, wakeHeight);
+  float slopeBreak = smoothstep(0.00055, 0.0065, heightSlope);
+  float directionalBreak = clamp(max(leadingFace * crestBias, slopeBreak * leadingFace * 0.75), 0.0, 1.0);
   float rippleEnergy = abs(wakeHeight) + heightSlope * 1.35;
   float breakingFoam = smoothstep(
     foamHeightThreshold * 0.8,
     foamHeightThreshold + foamHeightSoftness,
-    excessHeight + heightSlope * 0.65
+    excessHeight + heightSlope * 0.65 * directionalBreak
   );
 
-  float heightFoam = clamp(max(crestFoam, breakingFoam) * foamFromHeightStrength, 0.0, 1.0);
-  float rippleFoam = smoothstep(0.003, 0.028, rippleEnergy);
-  float sharpRippleFoam = smoothstep(0.002, 0.014, heightSlope) * smoothstep(0.001, 0.018, abs(wakeHeight));
+  float heightFoam = clamp(max(crestFoam, breakingFoam) * foamFromHeightStrength * directionalBreak, 0.0, 1.0);
+  float rippleFoam = smoothstep(0.00055, 0.010, rippleEnergy) * directionalBreak;
+  float sharpRippleFoam = smoothstep(0.00045, 0.0065, heightSlope) * smoothstep(0.00035, 0.009, abs(wakeHeight)) * directionalBreak;
   float extraRippleFoam = max(rippleFoam * 0.92, sharpRippleFoam);
   float objectFoam = clamp(
     (heightFoam + extraRippleFoam * extraFoamRippleBoost * extraFoamEnabled) * objectFoamEnabled,
@@ -203,10 +210,11 @@ void main() {
 
   float wakeFoamMask = clamp(max(objectFoam, rippleFoam * objectFoamEnabled), 0.0, 1.0);
   float foamMask = clamp(max(wakeFoamMask, waveFoamMask), 0.0, 1.0);
-  float foamPattern = foamTexture(foamCoord + time * 0.015, info.ba + vec2(heightSlope + oceanSlope));
-  float foam = clamp(foamMask * (0.62 + foamPattern * 0.62), 0.0, 1.0);
+  float foamPattern = foamTexture(foamCoord + time * 0.015, info.ba * waterTextureEnabled + vec2(heightSlope + oceanSlope));
+  float textureMask = mix(1.0, mix(0.82, 1.0, foamPattern), foamTextureEnabled);
+  float foam = clamp(foamMask * textureMask * 1.12, 0.0, 1.0);
 
-  vec3 normal = normalize(oceanNormal(pos.xz) + vec3(info.b, 0.0, info.a) * wakeWaveStrength * 1.4);
+  vec3 normal = normalize(oceanNormal(pos.xz) + vec3(info.b, 0.0, info.a) * wakeTextureStrength * 1.4);
   vec3 incomingRay = normalize(pos - eye);
 
   if (underwater == 1.) {
@@ -218,9 +226,9 @@ void main() {
     vec3 reflectedColor = getSurfaceRayColor(pos, reflectedRay, underwaterColor);
     vec3 refractedColor = getSurfaceRayColor(pos, refractedRay, vec3(1.0)) * vec3(0.8, 1.0, 1.1);
     vec3 finalColor = mix(reflectedColor, refractedColor, (1.0 - fresnel) * length(refractedRay));
-    finalColor = mix(finalColor, vec3(0.9, 0.98, 1.0), foam * 0.55);
+    finalColor = mix(finalColor, vec3(0.82, 0.92, 0.96), foam * 0.32);
 
-    gl_FragColor = vec4(finalColor, 0.55);
+    gl_FragColor = vec4(finalColor, waterOpacity);
   } else {
     vec3 reflectedRay = reflect(incomingRay, normal);
     vec3 refractedRay = refract(incomingRay, normal, IOR_AIR / IOR_WATER);
@@ -228,13 +236,15 @@ void main() {
 
     vec3 reflectedColor = getSurfaceRayColor(pos, reflectedRay, abovewaterColor);
     vec3 refractedColor = getSurfaceRayColor(pos, refractedRay, abovewaterColor);
-    vec3 finalColor = mix(refractedColor, reflectedColor, fresnel);
-    vec2 reflectionDistortion = normal.xz * 0.045 + info.ba * 0.055;
+    vec3 opaqueWaterColor = vec3(0.015, 0.16, 0.28);
+    vec3 visibleWaterColor = mix(refractedColor, opaqueWaterColor, waterOpacity);
+    vec3 finalColor = mix(visibleWaterColor, reflectedColor, fresnel);
+    vec2 reflectionDistortion = normal.xz * 0.045 + info.ba * 0.055 * waterTextureEnabled;
     vec4 planarReflection = getPlanarReflection(reflectionCoord, reflectionDistortion);
     float objectReflection = planarReflection.a * fresnel * reflectionStrength * (1.0 - foam * 0.65);
     finalColor = mix(finalColor, planarReflection.rgb, objectReflection);
-    finalColor = mix(finalColor, vec3(1.0), foam * 1.15);
+    finalColor = mix(finalColor, vec3(0.86, 0.94, 0.96), foam * 0.62);
 
-    gl_FragColor = vec4(finalColor, 0.55);
+    gl_FragColor = vec4(finalColor, waterOpacity);
   }
 }

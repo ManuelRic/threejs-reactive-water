@@ -11,11 +11,18 @@ const rippleLengthSlider = document.getElementById('ripple-length');
 const rippleLengthValue = document.getElementById('ripple-length-value');
 const reflectionStrengthSlider = document.getElementById('reflection-strength');
 const reflectionStrengthValue = document.getElementById('reflection-strength-value');
+const waterOpacitySlider = document.getElementById('water-opacity');
+const waterOpacityValue = document.getElementById('water-opacity-value');
 const toggleSphereButton = document.getElementById('toggle-sphere');
 const toggleShipButton = document.getElementById('toggle-ship');
+const shipModeRandomButton = document.getElementById('ship-mode-random');
+const shipModeCircleButton = document.getElementById('ship-mode-circle');
+const shipModeStoppedButton = document.getElementById('ship-mode-stopped');
 const toggleObjectFoamButton = document.getElementById('toggle-object-foam');
 const toggleWaveFoamButton = document.getElementById('toggle-wave-foam');
 const toggleExtraFoamButton = document.getElementById('toggle-extra-foam');
+const toggleFoamTextureButton = document.getElementById('toggle-foam-texture');
+const toggleWaterTextureButton = document.getElementById('toggle-water-texture');
 const toggleWireframeButton = document.getElementById('toggle-wireframe');
 
 const width = canvas.width;
@@ -24,6 +31,7 @@ const height = canvas.height;
 // Lower values make wake waves fade sooner. Higher values let them travel farther.
 let rippleDistance = Number(rippleLengthSlider.value);
 let reflectionStrength = Number(reflectionStrengthSlider.value);
+let waterOpacity = Number(waterOpacitySlider.value);
 const wakeHeightRecovery = 0.992;
 const maxWakeHeight = 5;
 let oceanWaveStrength = Number(waveSizeSlider.value);
@@ -38,8 +46,10 @@ let foamFromHeightStrength = normalFoamFromHeightStrength;
 let objectFoamEnabled = 1;
 let waveFoamEnabled = 0;
 let extraFoamEnabled = 0;
+let foamTextureEnabled = 1;
+let waterTextureEnabled = 1;
 let wireframeEnabled = false;
-const extraFoamRippleBoost = 1.35;
+const extraFoamRippleBoost = 0;
 const wakeDropCount = 5;
 const wakeTrailSpacing = 0.055;
 const wakeSpread = 0.72;
@@ -63,7 +73,7 @@ const shipWakeGeometryLengthBins = 6;
 const shipWakePressureStrength = -0.010;
 const shipWakeEmitterStrength = 0.010;
 const shipModelYawOffset = 2*Math.PI;
-const shipMovementYawOffset = Math.PI / 2;
+const shipMovementYawOffset = 0;
 const shipAutopilotSpeed = 0.18;
 const shipAutopilotTurnBiasMax = 0.45;
 const shipAutopilotTargetRadius = 0.12;
@@ -72,6 +82,12 @@ const shipAutopilotTurnChangeMinTime = 1.8;
 const shipAutopilotTurnChangeMaxTime = 3.8;
 const shipAutopilotTurnSmoothness = 1.6;
 const shipAutopilotHeadingSmoothness = 3.0;
+const shipMovementModeRandom = 'random';
+const shipMovementModeCircle = 'circle';
+const shipMovementModeStopped = 'stopped';
+const shipCircleCenter = { x: 0, z: 0 };
+const shipCircleRadius = 0.48;
+const shipCircleAngularSpeed = shipAutopilotSpeed / shipCircleRadius;
 const shipYawSmoothness = 5.2;
 const shipWaveTiltStart = 0.055;
 const shipWaveTiltFull = 0.11;
@@ -148,8 +164,8 @@ loadFile('shaders/utils.glsl').then((utils) => {
   // Light direction
   const light = [0.7559289460184544, 0.7559289460184544, -0.3779644730092272];
 
-  const objectAmbient = new THREE.AmbientLight(0xffffff, 0.35);
-  const objectLight = new THREE.DirectionalLight(0xffffff, 0.9);
+  const objectAmbient = new THREE.AmbientLight(0xffffff, 0.3);
+  const objectLight = new THREE.DirectionalLight(0xffffff, 0.6);
   objectLight.position.set(light[0], light[1], light[2]);
   objectScene.add(objectAmbient);
   objectScene.add(objectLight);
@@ -370,15 +386,18 @@ loadFile('shaders/utils.glsl').then((utils) => {
               reflectionTexture: { value: reflectionTarget.texture },
               reflectionTextureMatrix: { value: reflectionTextureMatrix },
               reflectionStrength: { value: reflectionStrength },
+              waterOpacity: { value: waterOpacity },
               time: { value: 0 },
               oceanWaveStrength: { value: oceanWaveStrength },
               wakeWaveStrength: { value: wakeWaveStrength },
+              waterTextureEnabled: { value: waterTextureEnabled },
               foamHeightThreshold: { value: foamHeightThreshold },
               foamHeightSoftness: { value: foamHeightSoftness },
               foamFromHeightStrength: { value: foamFromHeightStrength },
               objectFoamEnabled: { value: objectFoamEnabled },
               waveFoamEnabled: { value: waveFoamEnabled },
               extraFoamEnabled: { value: extraFoamEnabled },
+              foamTextureEnabled: { value: foamTextureEnabled },
               extraFoamRippleBoost: { value: extraFoamRippleBoost },
               underwater: { value: false },
           },
@@ -764,12 +783,12 @@ class FloatingSphere {
         }
 
         const loader = new THREE.GLTFLoader();
-        loader.load('models/cargo_03.glb', (gltf) => {
+        loader.load('models/tug_boat_02.glb', (gltf) => {
           const model = gltf.scene;
           const originalBox = new THREE.Box3().setFromObject(model);
           const originalSize = originalBox.getSize(new THREE.Vector3());
           const maxDeckSize = Math.max(originalSize.x, originalSize.z);
-          const scale = 0.15;
+          const scale = 0.02;
 
           model.scale.setScalar(scale);
           this.modelRoot.add(model);
@@ -989,9 +1008,13 @@ class FloatingSphere {
       this.group.updateMatrixWorld();
     }
 
-    moveToWaterPoint(point) {
-      const dx = point.x - this.group.position.x;
-      const dz = point.z - this.group.position.z;
+    moveToWaterPoint(point, wakeSpeedOverride = null) {
+      const previousPoint = {
+        x: this.group.position.x,
+        z: this.group.position.z,
+      };
+      const dx = point.x - previousPoint.x;
+      const dz = point.z - previousPoint.z;
 
       if (Math.sqrt(dx * dx + dz * dz) > 0.001) {
         this.targetYaw = Math.atan2(dx, dz) + shipMovementYawOffset;
@@ -1000,6 +1023,8 @@ class FloatingSphere {
       this.group.position.x = point.x;
       this.group.position.z = point.z;
       this.clampToPool();
+
+      emitCargoShipMovementWake(previousPoint, getVesselPoint(this), wakeSpeedOverride);
     }
 
     update(waterSamples, time) {
@@ -1089,6 +1114,7 @@ class FloatingSphere {
   const cargoShip = new CargoShip();
   floatingSphere.setVisible(false);
   let lastWakePoint = null;
+  let shipMovementMode = shipMovementModeRandom;
   let shipAutoTarget = null;
   let shipAutoLastTime = null;
   let shipAutoNextTurnTime = 0;
@@ -1096,6 +1122,7 @@ class FloatingSphere {
   let shipAutoTargetTurnBias = 0;
   let shipAutoTravelAngle = null;
   let shipAutoLastWakePoint = null;
+  let shipCircleAngle = null;
   let simulationTime = 0;
   let previousFrameTime = null;
 
@@ -1143,9 +1170,30 @@ class FloatingSphere {
     }
   });
 
+  waterOpacitySlider.addEventListener('input', () => {
+    waterOpacity = Number(waterOpacitySlider.value);
+    waterOpacityValue.textContent = waterOpacity.toFixed(2);
+
+    if (water.material) {
+      water.material.uniforms['waterOpacity'].value = waterOpacity;
+    }
+  });
+
   function setToggleButtonState(button, enabled) {
     button.classList.toggle('is-info', enabled);
     button.classList.toggle('is-light', !enabled);
+  }
+
+  function updateShipMovementModeButtons() {
+    setToggleButtonState(shipModeRandomButton, shipMovementMode === shipMovementModeRandom);
+    setToggleButtonState(shipModeCircleButton, shipMovementMode === shipMovementModeCircle);
+    setToggleButtonState(shipModeStoppedButton, shipMovementMode === shipMovementModeStopped);
+  }
+
+  function setShipMovementMode(mode) {
+    shipMovementMode = mode;
+    resetShipAutopilotState();
+    updateShipMovementModeButtons();
   }
 
   function setMaterialWireframe(material, enabled) {
@@ -1205,6 +1253,18 @@ class FloatingSphere {
     setToggleButtonState(toggleShipButton, cargoShip.visible);
   });
 
+  shipModeRandomButton.addEventListener('click', () => {
+    setShipMovementMode(shipMovementModeRandom);
+  });
+
+  shipModeCircleButton.addEventListener('click', () => {
+    setShipMovementMode(shipMovementModeCircle);
+  });
+
+  shipModeStoppedButton.addEventListener('click', () => {
+    setShipMovementMode(shipMovementModeStopped);
+  });
+
   toggleObjectFoamButton.addEventListener('click', () => {
     objectFoamEnabled = objectFoamEnabled > 0 ? 0 : 1;
     setToggleButtonState(toggleObjectFoamButton, objectFoamEnabled > 0);
@@ -1231,6 +1291,24 @@ class FloatingSphere {
 
     if (water.material) {
       water.material.uniforms['extraFoamEnabled'].value = extraFoamEnabled;
+    }
+  });
+
+  toggleFoamTextureButton.addEventListener('click', () => {
+    foamTextureEnabled = foamTextureEnabled > 0 ? 0 : 1;
+    setToggleButtonState(toggleFoamTextureButton, foamTextureEnabled > 0);
+
+    if (water.material) {
+      water.material.uniforms['foamTextureEnabled'].value = foamTextureEnabled;
+    }
+  });
+
+  toggleWaterTextureButton.addEventListener('click', () => {
+    waterTextureEnabled = waterTextureEnabled > 0 ? 0 : 1;
+    setToggleButtonState(toggleWaterTextureButton, waterTextureEnabled > 0);
+
+    if (water.material) {
+      water.material.uniforms['waterTextureEnabled'].value = waterTextureEnabled;
     }
   });
 
@@ -1298,14 +1376,40 @@ class FloatingSphere {
     cargoShip.wakeTurnAmount = 0;
   }
 
-  function updateAutonomousShip(time) {
-    if (!cargoShip.visible || draggedVessel === cargoShip) {
-      shipAutoLastTime = time;
-      shipAutoLastWakePoint = null;
-      shipAutoTravelAngle = null;
-      return;
+  function emitCargoShipMovementWake(fromPoint, toPoint, wakeSpeedOverride = null) {
+    if (!cargoShip.visible) return;
+
+    if (!shipAutoLastWakePoint) {
+      shipAutoLastWakePoint = { x: fromPoint.x, z: fromPoint.z };
     }
 
+    const wakeFromPoint = shipAutoLastWakePoint;
+    const wakeDx = toPoint.x - wakeFromPoint.x;
+    const wakeDz = toPoint.z - wakeFromPoint.z;
+
+    if (Math.sqrt(wakeDx * wakeDx + wakeDz * wakeDz) >= wakeMinMovement) {
+      addMovementWake(cargoShip, wakeFromPoint, toPoint, wakeSpeedOverride);
+      shipAutoLastWakePoint = { x: toPoint.x, z: toPoint.z };
+    }
+  }
+
+  function resetShipAutopilotState() {
+    shipAutoTarget = null;
+    shipAutoLastTime = null;
+    shipAutoNextTurnTime = 0;
+    shipAutoTurnBias = 0;
+    shipAutoTargetTurnBias = 0;
+    shipAutoTravelAngle = null;
+    shipAutoLastWakePoint = null;
+    shipCircleAngle = null;
+    resetShipWakeDirection();
+  }
+
+  function getShipMovementSpeedAmount(step, deltaTime) {
+    return deltaTime > 0 ? clamp((step / deltaTime) / 0.35, 0, 1) : 0;
+  }
+
+  function updateShipRandomMovement(time, deltaTime) {
     if (!shipAutoTarget) {
       shipAutoTarget = randomShipAutoTarget();
       chooseShipAutoTurn(time);
@@ -1329,12 +1433,6 @@ class FloatingSphere {
       chooseShipAutoTurn(time);
     }
 
-    const previousTime = shipAutoLastTime === null ? time : shipAutoLastTime;
-    const deltaTime = Math.min(0.05, Math.max(0, time - previousTime));
-    shipAutoLastTime = time;
-
-    if (deltaTime <= 0) return;
-
     const targetAngle = Math.atan2(dx, dz);
     const turnBlend = 1 - Math.exp(-deltaTime * shipAutopilotTurnSmoothness);
     const headingBlend = 1 - Math.exp(-deltaTime * shipAutopilotHeadingSmoothness);
@@ -1352,16 +1450,57 @@ class FloatingSphere {
       z: current.z + Math.cos(travelAngle) * step,
     };
 
-    const wakeFromPoint = shipAutoLastWakePoint || current;
-    const wakeDx = nextPoint.x - wakeFromPoint.x;
-    const wakeDz = nextPoint.z - wakeFromPoint.z;
+    cargoShip.moveToWaterPoint(nextPoint, getShipMovementSpeedAmount(step, deltaTime));
+  }
 
-    if (Math.sqrt(wakeDx * wakeDx + wakeDz * wakeDz) >= wakeMinMovement) {
-      addMovementWake(cargoShip, wakeFromPoint, nextPoint);
-      shipAutoLastWakePoint = { x: nextPoint.x, z: nextPoint.z };
+  function updateShipCircleMovement(deltaTime) {
+    const current = getVesselPoint(cargoShip);
+
+    if (shipCircleAngle === null) {
+      shipCircleAngle = Math.atan2(current.z - shipCircleCenter.z, current.x - shipCircleCenter.x);
     }
 
-    cargoShip.moveToWaterPoint(nextPoint);
+    shipCircleAngle += shipCircleAngularSpeed * deltaTime;
+
+    const circlePoint = {
+      x: shipCircleCenter.x + Math.cos(shipCircleAngle) * shipCircleRadius,
+      z: shipCircleCenter.z + Math.sin(shipCircleAngle) * shipCircleRadius,
+    };
+    const dx = circlePoint.x - current.x;
+    const dz = circlePoint.z - current.z;
+    const distance = Math.sqrt(dx * dx + dz * dz);
+
+    if (distance <= 0.0001) return;
+
+    const step = Math.min(distance, shipAutopilotSpeed * deltaTime);
+    const nextPoint = {
+      x: current.x + dx / distance * step,
+      z: current.z + dz / distance * step,
+    };
+
+    cargoShip.moveToWaterPoint(nextPoint, getShipMovementSpeedAmount(step, deltaTime));
+  }
+
+  function updateAutonomousShip(time) {
+    if (!cargoShip.visible || draggedVessel === cargoShip || shipMovementMode === shipMovementModeStopped) {
+      shipAutoLastTime = time;
+      shipAutoLastWakePoint = null;
+      shipAutoTravelAngle = null;
+      return;
+    }
+
+    const previousTime = shipAutoLastTime === null ? time : shipAutoLastTime;
+    const deltaTime = Math.min(0.05, Math.max(0, time - previousTime));
+    shipAutoLastTime = time;
+
+    if (deltaTime <= 0) return;
+
+    if (shipMovementMode === shipMovementModeCircle) {
+      updateShipCircleMovement(deltaTime);
+      return;
+    }
+
+    updateShipRandomMovement(time, deltaTime);
   }
 
   function pickVessel(event) {
@@ -1740,7 +1879,9 @@ class FloatingSphere {
       addSphereWake(fromPoint, toPoint, directionX, directionZ, perpendicularX, perpendicularZ, speed);
     }
 
-    addTrailingKelvinWake(vessel, fromPoint, toPoint, directionX, directionZ, perpendicularX, perpendicularZ, wakeSpeed);
+    if (vessel !== cargoShip) {
+      addTrailingKelvinWake(vessel, fromPoint, toPoint, directionX, directionZ, perpendicularX, perpendicularZ, wakeSpeed);
+    }
   }
 
   function onMouseMove(event) {
@@ -1768,7 +1909,7 @@ class FloatingSphere {
     event.preventDefault();
     const targetPoint = getOffsetWaterPoint(point);
 
-    if (lastWakePoint) {
+    if (lastWakePoint && draggedVessel !== cargoShip) {
       addMovementWake(draggedVessel, lastWakePoint, targetPoint);
     }
 
@@ -1797,9 +1938,7 @@ class FloatingSphere {
     event.preventDefault();
     draggedVessel = vessel;
     if (draggedVessel === cargoShip) {
-      shipAutoTarget = null;
-      shipAutoLastWakePoint = null;
-      resetShipWakeDirection();
+      resetShipAutopilotState();
     }
     const vesselPoint = getVesselPoint(draggedVessel);
     draggedVesselOffset = {
@@ -1816,10 +1955,7 @@ class FloatingSphere {
 
     if (event.button === 0) {
       if (draggedVessel === cargoShip) {
-        shipAutoTarget = null;
-        shipAutoLastTime = null;
-        shipAutoLastWakePoint = null;
-        resetShipWakeDirection();
+        resetShipAutopilotState();
       }
       draggedVessel = null;
       draggedVesselOffset = { x: 0, z: 0 };
@@ -1856,11 +1992,15 @@ class FloatingSphere {
     wakeHeightValue.textContent = objectWakeHeightScale.toFixed(2);
     rippleLengthValue.textContent = rippleDistance.toFixed(3);
     reflectionStrengthValue.textContent = reflectionStrength.toFixed(2);
+    waterOpacityValue.textContent = waterOpacity.toFixed(2);
     setToggleButtonState(toggleSphereButton, floatingSphere.visible);
     setToggleButtonState(toggleShipButton, cargoShip.visible);
+    updateShipMovementModeButtons();
     setToggleButtonState(toggleObjectFoamButton, objectFoamEnabled > 0);
     setToggleButtonState(toggleWaveFoamButton, waveFoamEnabled > 0);
     setToggleButtonState(toggleExtraFoamButton, extraFoamEnabled > 0);
+    setToggleButtonState(toggleFoamTextureButton, foamTextureEnabled > 0);
+    setToggleButtonState(toggleWaterTextureButton, waterTextureEnabled > 0);
     setToggleButtonState(toggleWireframeButton, wireframeEnabled);
     applyWireframeMode();
     updateFoamUniforms();

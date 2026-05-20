@@ -5,6 +5,7 @@ uniform mat4 reflectionTextureMatrix;
 uniform float time;
 uniform float oceanWaveStrength;
 uniform float wakeWaveStrength;
+uniform float waterTextureEnabled;
 
 attribute vec3 position;
 
@@ -64,7 +65,7 @@ void main() {
   pos = position.xzy;
   vec3 ocean = oceanDisplacement(pos.xz);
   pos.xz += ocean.xz;
-  pos.y += ocean.y + info.r * wakeWaveStrength;
+  pos.y += ocean.y + info.r * wakeWaveStrength * waterTextureEnabled;
   reflectionCoord = reflectionTextureMatrix * vec4(pos, 1.0);
 
   vec3 axis_x = vec3(modelViewMatrix[0].x, modelViewMatrix[0].y, modelViewMatrix[0].z);
