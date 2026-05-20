@@ -5,6 +5,7 @@ precision highp int;
 
 uniform float underwater;
 uniform samplerCube sky;
+uniform sampler2D reflectionTexture;
 uniform float time;
 uniform float oceanWaveStrength;
 uniform float wakeWaveStrength;
@@ -15,9 +16,11 @@ uniform float objectFoamEnabled;
 uniform float waveFoamEnabled;
 uniform float extraFoamEnabled;
 uniform float extraFoamRippleBoost;
+uniform float reflectionStrength;
 
 varying vec3 eye;
 varying vec3 pos;
+varying vec4 reflectionCoord;
 
 
 vec3 getSurfaceRayColor(vec3 origin, vec3 ray, vec3 waterColor) {
@@ -73,6 +76,16 @@ float foamTexture(vec2 coord, vec2 direction) {
   float flecks = smoothstep(0.62, 0.95, specks);
 
   return clamp(cells + flecks * 0.45, 0.0, 1.0);
+}
+
+vec4 getPlanarReflection(vec4 projectedCoord, vec2 distortion) {
+  vec3 projected = projectedCoord.xyz / projectedCoord.w;
+  vec2 uv = projected.xy + distortion;
+  float visible = step(0.0, uv.x) * step(uv.x, 1.0) * step(0.0, uv.y) * step(uv.y, 1.0);
+  vec4 reflectedScene = texture2D(reflectionTexture, clamp(uv, 0.001, 0.999));
+
+  reflectedScene.a *= visible;
+  return reflectedScene;
 }
 
 struct OceanWave {
@@ -159,6 +172,7 @@ void main() {
   float backHeight = texture2D(water, foamCoord - vec2(0.0, texel)).r * wakeWaveStrength;
   float frontHeight = texture2D(water, foamCoord + vec2(0.0, texel)).r * wakeWaveStrength;
   float heightSlope = length(vec2(rightHeight - leftHeight, frontHeight - backHeight));
+  float rippleEnergy = abs(wakeHeight) + heightSlope * 1.35;
   float breakingFoam = smoothstep(
     foamHeightThreshold * 0.8,
     foamHeightThreshold + foamHeightSoftness,
@@ -166,14 +180,14 @@ void main() {
   );
 
   float heightFoam = clamp(max(crestFoam, breakingFoam) * foamFromHeightStrength, 0.0, 1.0);
-  float ripplePresence = smoothstep(0.002, 0.018, abs(wakeHeight) + heightSlope * 0.8);
-  float extraRippleFoam = ripplePresence * smoothstep(0.0, foamHeightSoftness, excessHeight + heightSlope * 0.9);
+  float rippleFoam = smoothstep(0.003, 0.028, rippleEnergy);
+  float sharpRippleFoam = smoothstep(0.002, 0.014, heightSlope) * smoothstep(0.001, 0.018, abs(wakeHeight));
+  float extraRippleFoam = max(rippleFoam * 0.92, sharpRippleFoam);
   float objectFoam = clamp(
     (heightFoam + extraRippleFoam * extraFoamRippleBoost * extraFoamEnabled) * objectFoamEnabled,
     0.0,
     1.0
   );
-
   float oceanCenter = oceanHeight(pos.xz);
   float oceanFoamScale = max(0.001, oceanWaveStrength);
   float oceanRange = oceanFoamScale * 0.7;
@@ -187,7 +201,8 @@ void main() {
   float oceanBreaking = smoothstep(oceanFoamScale * 0.05, oceanFoamScale * 0.22, oceanSlope);
   float waveFoamMask = clamp(oceanCrest * oceanBreaking * waveFoamEnabled, 0.0, 1.0);
 
-  float foamMask = clamp(max(objectFoam, waveFoamMask), 0.0, 1.0);
+  float wakeFoamMask = clamp(max(objectFoam, rippleFoam * objectFoamEnabled), 0.0, 1.0);
+  float foamMask = clamp(max(wakeFoamMask, waveFoamMask), 0.0, 1.0);
   float foamPattern = foamTexture(foamCoord + time * 0.015, info.ba + vec2(heightSlope + oceanSlope));
   float foam = clamp(foamMask * (0.62 + foamPattern * 0.62), 0.0, 1.0);
 
@@ -214,6 +229,10 @@ void main() {
     vec3 reflectedColor = getSurfaceRayColor(pos, reflectedRay, abovewaterColor);
     vec3 refractedColor = getSurfaceRayColor(pos, refractedRay, abovewaterColor);
     vec3 finalColor = mix(refractedColor, reflectedColor, fresnel);
+    vec2 reflectionDistortion = normal.xz * 0.045 + info.ba * 0.055;
+    vec4 planarReflection = getPlanarReflection(reflectionCoord, reflectionDistortion);
+    float objectReflection = planarReflection.a * fresnel * reflectionStrength * (1.0 - foam * 0.65);
+    finalColor = mix(finalColor, planarReflection.rgb, objectReflection);
     finalColor = mix(finalColor, vec3(1.0), foam * 1.15);
 
     gl_FragColor = vec4(finalColor, 0.55);

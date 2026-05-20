@@ -1,6 +1,7 @@
 uniform mat4 projectionMatrix;
 uniform mat4 modelViewMatrix;
 uniform sampler2D water;
+uniform mat4 reflectionTextureMatrix;
 uniform float time;
 uniform float oceanWaveStrength;
 uniform float wakeWaveStrength;
@@ -9,6 +10,7 @@ attribute vec3 position;
 
 varying vec3 eye;
 varying vec3 pos;
+varying vec4 reflectionCoord;
 
 struct OceanWave {
   vec2 direction;
@@ -63,6 +65,7 @@ void main() {
   vec3 ocean = oceanDisplacement(pos.xz);
   pos.xz += ocean.xz;
   pos.y += ocean.y + info.r * wakeWaveStrength;
+  reflectionCoord = reflectionTextureMatrix * vec4(pos, 1.0);
 
   vec3 axis_x = vec3(modelViewMatrix[0].x, modelViewMatrix[0].y, modelViewMatrix[0].z);
   vec3 axis_y = vec3(modelViewMatrix[1].x, modelViewMatrix[1].y, modelViewMatrix[1].z);

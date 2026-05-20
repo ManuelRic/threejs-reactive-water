@@ -2,3 +2,11 @@ add a value that determines the basic wave height, this way, if we register high
 giving the visual effect of a wavy day automatically.
 
 make the wave be formed with a greater hight with less movement
+
+if water is in contact with something else make that area wich is in contact white, to simulate waves crashing
+
+sliders to play with frequency, amplitude, etc. => create different types of waves, finde the most realistc
+
+could having the same bouyancy behavior as the sohere work?
+
+add wireframe to comprehend and adapt features

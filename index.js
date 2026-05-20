@@ -1,23 +1,29 @@
 const canvas = document.getElementById('canvas');
 const buoyancySlider = document.getElementById('buoyancy');
 const buoyancyValue = document.getElementById('buoyancy-value');
+const shipBuoyancySlider = document.getElementById('ship-buoyancy');
+const shipBuoyancyValue = document.getElementById('ship-buoyancy-value');
 const waveSizeSlider = document.getElementById('wave-size');
 const waveSizeValue = document.getElementById('wave-size-value');
 const wakeHeightSlider = document.getElementById('wake-height');
 const wakeHeightValue = document.getElementById('wake-height-value');
 const rippleLengthSlider = document.getElementById('ripple-length');
 const rippleLengthValue = document.getElementById('ripple-length-value');
+const reflectionStrengthSlider = document.getElementById('reflection-strength');
+const reflectionStrengthValue = document.getElementById('reflection-strength-value');
 const toggleSphereButton = document.getElementById('toggle-sphere');
 const toggleShipButton = document.getElementById('toggle-ship');
 const toggleObjectFoamButton = document.getElementById('toggle-object-foam');
 const toggleWaveFoamButton = document.getElementById('toggle-wave-foam');
 const toggleExtraFoamButton = document.getElementById('toggle-extra-foam');
+const toggleWireframeButton = document.getElementById('toggle-wireframe');
 
 const width = canvas.width;
 const height = canvas.height;
 
 // Lower values make wake waves fade sooner. Higher values let them travel farther.
 let rippleDistance = Number(rippleLengthSlider.value);
+let reflectionStrength = Number(reflectionStrengthSlider.value);
 const wakeHeightRecovery = 0.992;
 const maxWakeHeight = 5;
 let oceanWaveStrength = Number(waveSizeSlider.value);
@@ -32,6 +38,7 @@ let foamFromHeightStrength = normalFoamFromHeightStrength;
 let objectFoamEnabled = 1;
 let waveFoamEnabled = 0;
 let extraFoamEnabled = 0;
+let wireframeEnabled = false;
 const extraFoamRippleBoost = 1.35;
 const wakeDropCount = 5;
 const wakeTrailSpacing = 0.055;
@@ -57,10 +64,27 @@ const shipWakePressureStrength = -0.010;
 const shipWakeEmitterStrength = 0.010;
 const shipModelYawOffset = 2*Math.PI;
 const shipMovementYawOffset = Math.PI / 2;
-const shipAutopilotSpeed = 0.24;
-const shipAutopilotTurnBiasMax = 0.75;
+const shipAutopilotSpeed = 0.18;
+const shipAutopilotTurnBiasMax = 0.45;
 const shipAutopilotTargetRadius = 0.12;
 const shipAutopilotBounds = 0.72;
+const shipAutopilotTurnChangeMinTime = 1.8;
+const shipAutopilotTurnChangeMaxTime = 3.8;
+const shipAutopilotTurnSmoothness = 1.6;
+const shipAutopilotHeadingSmoothness = 3.0;
+const shipYawSmoothness = 5.2;
+const shipWaveTiltStart = 0.055;
+const shipWaveTiltFull = 0.11;
+const shipWavePitchStrength = 1.35;
+const shipWaveRollStrength = 1.1;
+const shipWaveTiltSmoothness = 4.5;
+const shipWaveMaxPitch = 0.22;
+const shipWaveMaxRoll = 0.18;
+const shipVerticalFollowMin = 0.35;
+const shipVerticalFollowMax = 14.0;
+const shipVerticalHeaveMin = 0.08;
+const shipVerticalHeaveMax = 1.25;
+const maxSimulationDelta = 1 / 30;
 
 // Colors
 const black = new THREE.Color('black');
@@ -101,6 +125,23 @@ loadFile('shaders/utils.glsl').then((utils) => {
   const renderer = new THREE.WebGLRenderer({canvas: canvas, antialias: true, alpha: true});
   renderer.setSize(width, height);
   renderer.autoClear = false;
+
+  const reflectionCamera = new THREE.PerspectiveCamera(camera.fov, camera.aspect, camera.near, camera.far);
+  const reflectionTarget = new THREE.WebGLRenderTarget(1024, 1024, {
+    minFilter: THREE.LinearFilter,
+    magFilter: THREE.LinearFilter,
+    format: THREE.RGBAFormat,
+  });
+  const reflectionTextureMatrix = new THREE.Matrix4();
+  const reflectionViewPosition = new THREE.Vector3();
+  const reflectionViewDirection = new THREE.Vector3();
+  const reflectionTargetPoint = new THREE.Vector3();
+  const reflectionTextureTransform = new THREE.Matrix4().set(
+    0.5, 0.0, 0.0, 0.5,
+    0.0, 0.5, 0.0, 0.5,
+    0.0, 0.0, 0.5, 0.5,
+    0.0, 0.0, 0.0, 1.0
+  );
 
   const objectScene = new THREE.Scene();
 
@@ -326,6 +367,9 @@ loadFile('shaders/utils.glsl').then((utils) => {
               sky: { value: textureCube },
               water: { value: null },
               causticTex: { value: null },
+              reflectionTexture: { value: reflectionTarget.texture },
+              reflectionTextureMatrix: { value: reflectionTextureMatrix },
+              reflectionStrength: { value: reflectionStrength },
               time: { value: 0 },
               oceanWaveStrength: { value: oceanWaveStrength },
               wakeWaveStrength: { value: wakeWaveStrength },
@@ -362,6 +406,31 @@ loadFile('shaders/utils.glsl').then((utils) => {
       renderer.render(this.mesh, camera);
     }
 
+  }
+
+  function updateReflectionTexture() {
+    reflectionViewPosition.copy(camera.position);
+    reflectionViewPosition.y *= -1;
+
+    camera.getWorldDirection(reflectionViewDirection);
+    reflectionViewDirection.y *= -1;
+    reflectionTargetPoint.copy(reflectionViewPosition).add(reflectionViewDirection);
+
+    reflectionCamera.position.copy(reflectionViewPosition);
+    reflectionCamera.up.copy(camera.up);
+    reflectionCamera.up.y *= -1;
+    reflectionCamera.lookAt(reflectionTargetPoint);
+    reflectionCamera.updateMatrixWorld();
+    reflectionCamera.projectionMatrix.copy(camera.projectionMatrix);
+
+    reflectionTextureMatrix.copy(reflectionTextureTransform);
+    reflectionTextureMatrix.multiply(reflectionCamera.projectionMatrix);
+    reflectionTextureMatrix.multiply(reflectionCamera.matrixWorldInverse);
+
+    renderer.setRenderTarget(reflectionTarget);
+    renderer.setClearColor(black, 0);
+    renderer.clear();
+    renderer.render(objectScene, reflectionCamera);
   }
 
 
@@ -654,7 +723,13 @@ class FloatingSphere {
       this.visible = true;
       this.waterLevel = 0;
       this.draft = 0.035;
+      this.buoyancy = Number(shipBuoyancySlider.value);
+      this.floatY = 0;
+      this.needsFloatReset = true;
       this.targetYaw = 0;
+      this.previousUpdateTime = null;
+      this.wavePitch = 0;
+      this.waveRoll = 0;
       this.wakeEmitters = [];
       this.wakeDirection = null;
       this.wakeTurnAmount = 0;
@@ -667,6 +742,7 @@ class FloatingSphere {
       this.modelRoot = new THREE.Group();
       this.group.add(this.modelRoot);
       this.group.position.set(-0.5, 0, 0.15);
+      this.floatY = this.group.position.y;
 
       const dragGeometry = new THREE.BoxBufferGeometry(0.56, 0.18, 0.22);
       const dragMaterial = new THREE.MeshBasicMaterial({
@@ -717,6 +793,7 @@ class FloatingSphere {
           });
 
           this.update(0, 0);
+          this.requestFloatReset();
           resolve();
         }, undefined, (error) => {
           console.error('Could not load cargo_ship_01.glb', error);
@@ -728,6 +805,14 @@ class FloatingSphere {
     setVisible(visible) {
       this.visible = visible;
       this.group.visible = visible;
+    }
+
+    setBuoyancy(value) {
+      this.buoyancy = value;
+    }
+
+    requestFloatReset() {
+      this.needsFloatReset = true;
     }
 
     resizeDragTarget() {
@@ -917,12 +1002,45 @@ class FloatingSphere {
       this.clampToPool();
     }
 
-    update(waterLevel, time) {
-      this.waterLevel = waterLevel;
-      this.group.position.y = waterLevel - this.draft + Math.sin(time * 2.0) * 0.004;
-      this.group.rotation.y += (this.targetYaw - this.group.rotation.y) * 0.18;
-      this.modelRoot.rotation.x = Math.sin(time * 1.35 + this.group.position.z * 4.0) * 0.025;
-      this.modelRoot.rotation.z = Math.sin(time * 1.6 + this.group.position.x * 3.0) * 0.018;
+    update(waterSamples, time) {
+      const samples = typeof waterSamples === 'number'
+        ? { center: waterSamples, bow: waterSamples, stern: waterSamples, left: waterSamples, right: waterSamples }
+        : waterSamples;
+
+      this.waterLevel = samples.center;
+      const previousTime = this.previousUpdateTime === null ? time : this.previousUpdateTime;
+      const deltaTime = Math.min(0.05, Math.max(0, time - previousTime));
+      const yawBlend = 1 - Math.exp(-deltaTime * shipYawSmoothness);
+      const yawDelta = shortestAngleDelta(this.group.rotation.y, this.targetYaw);
+      const tiltBlend = 1 - Math.exp(-deltaTime * shipWaveTiltSmoothness);
+      const waveTiltAmount = smoothStep(shipWaveTiltStart, shipWaveTiltFull, oceanWaveStrength);
+      const length = Math.max(0.001, this.wakeExtents.bow + this.wakeExtents.stern);
+      const beam = Math.max(0.001, this.wakeExtents.beam);
+      const followAmount = clamp(this.buoyancy / 2, 0, 1);
+      const heaveAmount = shipVerticalHeaveMin + (shipVerticalHeaveMax - shipVerticalHeaveMin) * followAmount;
+      const targetY = this.waterLevel * heaveAmount - this.draft;
+      const targetPitch = clamp((samples.bow - samples.stern) / length * shipWavePitchStrength, -shipWaveMaxPitch, shipWaveMaxPitch) * waveTiltAmount * heaveAmount;
+      const targetRoll = clamp((samples.right - samples.left) / beam * shipWaveRollStrength, -shipWaveMaxRoll, shipWaveMaxRoll) * waveTiltAmount * heaveAmount;
+      const fakeRockAmount = 1 - waveTiltAmount;
+      const followSpeed = shipVerticalFollowMin + (shipVerticalFollowMax - shipVerticalFollowMin) * followAmount;
+      const verticalBlend = 1 - Math.exp(-deltaTime * followSpeed);
+
+      this.previousUpdateTime = time;
+      if (this.needsFloatReset) {
+        this.floatY = targetY;
+        this.wavePitch = targetPitch;
+        this.waveRoll = targetRoll;
+        this.needsFloatReset = false;
+      } else {
+        this.floatY += (targetY - this.floatY) * verticalBlend;
+      }
+
+      this.wavePitch += (targetPitch - this.wavePitch) * tiltBlend;
+      this.waveRoll += (targetRoll - this.waveRoll) * tiltBlend;
+      this.group.position.y = this.floatY + Math.sin(time * 2.0) * 0.0015 * fakeRockAmount;
+      this.group.rotation.y += yawDelta * yawBlend;
+      this.modelRoot.rotation.x = this.wavePitch + Math.sin(time * 1.2 + this.group.position.z * 3.0) * 0.02 * fakeRockAmount;
+      this.modelRoot.rotation.z = this.waveRoll + Math.sin(time * 1.4 + this.group.position.x * 2.6) * 0.014 * fakeRockAmount;
     }
 
   }
@@ -975,7 +1093,11 @@ class FloatingSphere {
   let shipAutoLastTime = null;
   let shipAutoNextTurnTime = 0;
   let shipAutoTurnBias = 0;
+  let shipAutoTargetTurnBias = 0;
+  let shipAutoTravelAngle = null;
   let shipAutoLastWakePoint = null;
+  let simulationTime = 0;
+  let previousFrameTime = null;
 
   const debug = new Debug();
 
@@ -985,6 +1107,12 @@ class FloatingSphere {
     floatingSphere.setBuoyancy(value);
   });
 
+  shipBuoyancySlider.addEventListener('input', () => {
+    const value = Number(shipBuoyancySlider.value);
+    shipBuoyancyValue.textContent = value.toFixed(2);
+    cargoShip.setBuoyancy(value);
+  });
+
   waveSizeSlider.addEventListener('input', () => {
     oceanWaveStrength = Number(waveSizeSlider.value);
     waveSizeValue.textContent = oceanWaveStrength.toFixed(3);
@@ -992,6 +1120,8 @@ class FloatingSphere {
     if (water.material) {
       water.material.uniforms['oceanWaveStrength'].value = oceanWaveStrength;
     }
+
+    cargoShip.requestFloatReset();
   });
 
   wakeHeightSlider.addEventListener('input', () => {
@@ -1004,9 +1134,47 @@ class FloatingSphere {
     rippleLengthValue.textContent = rippleDistance.toFixed(3);
   });
 
+  reflectionStrengthSlider.addEventListener('input', () => {
+    reflectionStrength = Number(reflectionStrengthSlider.value);
+    reflectionStrengthValue.textContent = reflectionStrength.toFixed(2);
+
+    if (water.material) {
+      water.material.uniforms['reflectionStrength'].value = reflectionStrength;
+    }
+  });
+
   function setToggleButtonState(button, enabled) {
     button.classList.toggle('is-info', enabled);
     button.classList.toggle('is-light', !enabled);
+  }
+
+  function setMaterialWireframe(material, enabled) {
+    if (!material) return;
+
+    if (Array.isArray(material)) {
+      material.forEach((item) => setMaterialWireframe(item, enabled));
+      return;
+    }
+
+    if ('wireframe' in material) {
+      material.wireframe = enabled;
+      material.needsUpdate = true;
+    }
+  }
+
+  function setObjectWireframe(object, enabled) {
+    object.traverse((child) => {
+      if (child.isMesh) {
+        setMaterialWireframe(child.material, enabled);
+      }
+    });
+  }
+
+  function applyWireframeMode() {
+    setObjectWireframe(objectScene, wireframeEnabled);
+    setMaterialWireframe(water.material, wireframeEnabled);
+    setMaterialWireframe(pool._material, wireframeEnabled);
+    setMaterialWireframe(waterVolume._material, wireframeEnabled);
   }
 
   function updateFoamUniforms() {
@@ -1066,6 +1234,12 @@ class FloatingSphere {
     }
   });
 
+  toggleWireframeButton.addEventListener('click', () => {
+    wireframeEnabled = !wireframeEnabled;
+    setToggleButtonState(toggleWireframeButton, wireframeEnabled);
+    applyWireframeMode();
+  });
+
   function hasVisibleVessel() {
     return floatingSphere.visible || cargoShip.visible;
   }
@@ -1090,6 +1264,23 @@ class FloatingSphere {
     return min + Math.random() * (max - min);
   }
 
+  function clamp(value, min, max) {
+    return Math.min(max, Math.max(min, value));
+  }
+
+  function smoothStep(edge0, edge1, value) {
+    const t = clamp((value - edge0) / (edge1 - edge0), 0, 1);
+    return t * t * (3 - 2 * t);
+  }
+
+  function shortestAngleDelta(from, to) {
+    return Math.atan2(Math.sin(to - from), Math.cos(to - from));
+  }
+
+  function smoothAngle(from, to, amount) {
+    return from + shortestAngleDelta(from, to) * amount;
+  }
+
   function randomShipAutoTarget() {
     return {
       x: randomRange(-shipAutopilotBounds, shipAutopilotBounds),
@@ -1098,8 +1289,8 @@ class FloatingSphere {
   }
 
   function chooseShipAutoTurn(time) {
-    shipAutoTurnBias = randomRange(-shipAutopilotTurnBiasMax, shipAutopilotTurnBiasMax);
-    shipAutoNextTurnTime = time + randomRange(0.9, 2.4);
+    shipAutoTargetTurnBias = randomRange(-shipAutopilotTurnBiasMax, shipAutopilotTurnBiasMax);
+    shipAutoNextTurnTime = time + randomRange(shipAutopilotTurnChangeMinTime, shipAutopilotTurnChangeMaxTime);
   }
 
   function resetShipWakeDirection() {
@@ -1111,6 +1302,7 @@ class FloatingSphere {
     if (!cargoShip.visible || draggedVessel === cargoShip) {
       shipAutoLastTime = time;
       shipAutoLastWakePoint = null;
+      shipAutoTravelAngle = null;
       return;
     }
 
@@ -1128,6 +1320,7 @@ class FloatingSphere {
       shipAutoTarget = randomShipAutoTarget();
       chooseShipAutoTurn(time);
       shipAutoLastWakePoint = null;
+      shipAutoTravelAngle = null;
       resetShipWakeDirection();
       return;
     }
@@ -1143,7 +1336,16 @@ class FloatingSphere {
     if (deltaTime <= 0) return;
 
     const targetAngle = Math.atan2(dx, dz);
-    const travelAngle = targetAngle + shipAutoTurnBias * Math.min(1, distance / 0.45);
+    const turnBlend = 1 - Math.exp(-deltaTime * shipAutopilotTurnSmoothness);
+    const headingBlend = 1 - Math.exp(-deltaTime * shipAutopilotHeadingSmoothness);
+    shipAutoTurnBias += (shipAutoTargetTurnBias - shipAutoTurnBias) * turnBlend;
+
+    const desiredTravelAngle = targetAngle + shipAutoTurnBias * Math.min(1, distance / 0.5);
+    shipAutoTravelAngle = shipAutoTravelAngle === null
+      ? desiredTravelAngle
+      : smoothAngle(shipAutoTravelAngle, desiredTravelAngle, headingBlend);
+
+    const travelAngle = shipAutoTravelAngle;
     const step = Math.min(distance, shipAutopilotSpeed * deltaTime);
     const nextPoint = {
       x: current.x + Math.sin(travelAngle) * step,
@@ -1223,10 +1425,40 @@ class FloatingSphere {
     return height * oceanWaveStrength;
   }
 
+  function getTotalWaterHeightAt(x, z, time) {
+    const wakeHeight = waterSimulation.getHeightAt(renderer, x, z) * wakeWaveStrength;
+    return wakeHeight + getOceanHeightAt(x, z, time);
+  }
+
+  function getShipWaterSamples(time) {
+    const x = cargoShip.group.position.x;
+    const z = cargoShip.group.position.z;
+    const heading = cargoShip.group.rotation.y - shipMovementYawOffset;
+    const forwardX = Math.sin(heading);
+    const forwardZ = Math.cos(heading);
+    const sideX = -forwardZ;
+    const sideZ = forwardX;
+    const bowOffset = cargoShip.wakeExtents.bow;
+    const sternOffset = cargoShip.wakeExtents.stern;
+    const sideOffset = cargoShip.wakeExtents.beam * 0.5;
+
+    return {
+      center: getTotalWaterHeightAt(x, z, time),
+      bow: getTotalWaterHeightAt(x + forwardX * bowOffset, z + forwardZ * bowOffset, time),
+      stern: getTotalWaterHeightAt(x - forwardX * sternOffset, z - forwardZ * sternOffset, time),
+      left: getTotalWaterHeightAt(x - sideX * sideOffset, z - sideZ * sideOffset, time),
+      right: getTotalWaterHeightAt(x + sideX * sideOffset, z + sideZ * sideOffset, time),
+    };
+  }
 
   // Main rendering loop
   function animate() {
-    const time = performance.now() * 0.001;
+    const now = performance.now() * 0.001;
+    const realDelta = previousFrameTime === null ? 0 : Math.max(0, now - previousFrameTime);
+    const deltaTime = Math.min(realDelta, maxSimulationDelta);
+    previousFrameTime = now;
+    simulationTime += deltaTime;
+    const time = simulationTime;
 
     updateAutonomousShip(time);
 
@@ -1235,13 +1467,9 @@ class FloatingSphere {
 
     const sphereX = floatingSphere.mesh.position.x;
     const sphereZ = floatingSphere.mesh.position.z;
-    const sphereWakeHeight = waterSimulation.getHeightAt(renderer, sphereX, sphereZ) * wakeWaveStrength;
-    floatingSphere.update(sphereWakeHeight + getOceanHeightAt(sphereX, sphereZ, time));
+    floatingSphere.update(getTotalWaterHeightAt(sphereX, sphereZ, time));
 
-    const shipX = cargoShip.group.position.x;
-    const shipZ = cargoShip.group.position.z;
-    const shipWakeHeight = waterSimulation.getHeightAt(renderer, shipX, shipZ) * wakeWaveStrength;
-    cargoShip.update(shipWakeHeight + getOceanHeightAt(shipX, shipZ, time), time);
+    cargoShip.update(getShipWaterSamples(time), time);
 
     const waterTexture = waterSimulation.texture.texture;
 
@@ -1250,6 +1478,7 @@ class FloatingSphere {
     const causticsTexture = caustics.texture.texture;
 
     // debug.draw(renderer, causticsTexture);
+    updateReflectionTexture();
 
     renderer.setRenderTarget(null);
     renderer.setClearColor(white, 1);
@@ -1609,17 +1838,31 @@ class FloatingSphere {
     updateCameraFromOrbit();
   }
 
+  function resetFrameClock() {
+    previousFrameTime = null;
+  }
+
+  function onPageFocusChange() {
+    resetFrameClock();
+    cargoShip.requestFloatReset();
+  }
+
   const loaded = [waterSimulation.loaded, caustics.loaded, water.loaded, pool.loaded, cargoShip.loaded, debug.loaded];
 
   Promise.all(loaded).then(() => {
+    buoyancyValue.textContent = Number(buoyancySlider.value).toFixed(2);
+    shipBuoyancyValue.textContent = Number(shipBuoyancySlider.value).toFixed(2);
     waveSizeValue.textContent = oceanWaveStrength.toFixed(3);
     wakeHeightValue.textContent = objectWakeHeightScale.toFixed(2);
     rippleLengthValue.textContent = rippleDistance.toFixed(3);
+    reflectionStrengthValue.textContent = reflectionStrength.toFixed(2);
     setToggleButtonState(toggleSphereButton, floatingSphere.visible);
     setToggleButtonState(toggleShipButton, cargoShip.visible);
     setToggleButtonState(toggleObjectFoamButton, objectFoamEnabled > 0);
     setToggleButtonState(toggleWaveFoamButton, waveFoamEnabled > 0);
     setToggleButtonState(toggleExtraFoamButton, extraFoamEnabled > 0);
+    setToggleButtonState(toggleWireframeButton, wireframeEnabled);
+    applyWireframeMode();
     updateFoamUniforms();
 
     canvas.addEventListener('mousemove', { handleEvent: onMouseMove });
@@ -1627,6 +1870,9 @@ class FloatingSphere {
     canvas.addEventListener('wheel', { handleEvent: onWheel }, { passive: false });
     window.addEventListener('mouseup', { handleEvent: onMouseUp });
     canvas.addEventListener('contextmenu', { handleEvent: onContextMenu });
+    window.addEventListener('blur', resetFrameClock);
+    window.addEventListener('focus', onPageFocusChange);
+    document.addEventListener('visibilitychange', onPageFocusChange);
 
     animate();
   });
