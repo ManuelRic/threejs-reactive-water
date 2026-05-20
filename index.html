@@ -31,11 +31,11 @@
           </div>
           <div class="control-grid">
             <div class="range-control">
-              <label for="buoyancy"><span>Sphere buoyancy</span><output id="buoyancy-value">1.00</output></label>
+              <label for="buoyancy"><span>Sphere buoyancy</span><input id="buoyancy-value" class="value-input" type="number" min="0" max="2" step="0.01" value="1.00"></label>
               <input id="buoyancy" class="slider is-fullwidth" type="range" min="0" max="2" step="0.01" value="1">
             </div>
             <div class="range-control">
-              <label for="ship-buoyancy"><span>Ship buoyancy</span><output id="ship-buoyancy-value">1.00</output></label>
+              <label for="ship-buoyancy"><span>Ship buoyancy</span><input id="ship-buoyancy-value" class="value-input" type="number" min="0" max="2" step="0.01" value="1.00"></label>
               <input id="ship-buoyancy" class="slider is-fullwidth" type="range" min="0" max="2" step="0.01" value="1">
             </div>
           </div>
@@ -47,19 +47,19 @@
           </div>
           <div class="control-grid">
             <div class="range-control">
-              <label for="wave-size"><span>Amplitude</span><output id="wave-size-value">0.035</output></label>
-              <input id="wave-size" class="slider is-fullwidth" type="range" min="0" max="0.12" step="0.001" value="0.035">
+              <label for="wave-amplitude"><span>Amplitude</span><input id="wave-amplitude-value" class="value-input" type="number" min="0" max="0.12" step="0.001" value="0.035"></label>
+              <input id="wave-amplitude" class="slider is-fullwidth" type="range" min="0" max="0.12" step="0.001" value="0.035">
             </div>
             <div class="range-control">
-              <label for="wave-frequency"><span>Frequency</span><output id="wave-frequency-value">1.00</output></label>
+              <label for="wave-frequency"><span>Frequency</span><input id="wave-frequency-value" class="value-input" type="number" min="0.2" max="3" step="0.01" value="1.00"></label>
               <input id="wave-frequency" class="slider is-fullwidth" type="range" min="0.2" max="3" step="0.01" value="1">
             </div>
             <div class="range-control">
-              <label for="wave-speed"><span>Speed</span><output id="wave-speed-value">1.00</output></label>
+              <label for="wave-speed"><span>Speed</span><input id="wave-speed-value" class="value-input" type="number" min="0" max="3" step="0.01" value="1.00"></label>
               <input id="wave-speed" class="slider is-fullwidth" type="range" min="0" max="3" step="0.01" value="1">
             </div>
             <div class="range-control">
-              <label for="wave-sharpness"><span>Sharpness</span><output id="wave-sharpness-value">1.00</output></label>
+              <label for="wave-sharpness"><span>Sharpness</span><input id="wave-sharpness-value" class="value-input" type="number" min="0" max="2.5" step="0.01" value="1.00"></label>
               <input id="wave-sharpness" class="slider is-fullwidth" type="range" min="0" max="2.5" step="0.01" value="1">
             </div>
           </div>
@@ -71,11 +71,11 @@
           </div>
           <div class="control-grid">
             <div class="range-control">
-              <label for="wake-height"><span>Height</span><output id="wake-height-value">1.00</output></label>
+              <label for="wake-height"><span>Height</span><input id="wake-height-value" class="value-input" type="number" min="0.25" max="4" step="0.05" value="1.00"></label>
               <input id="wake-height" class="slider is-fullwidth" type="range" min="0.25" max="4" step="0.05" value="1">
             </div>
             <div class="range-control">
-              <label for="ripple-length"><span>Ripple length</span><output id="ripple-length-value">0.920</output></label>
+              <label for="ripple-length"><span>Ripple length</span><input id="ripple-length-value" class="value-input" type="number" min="0.75" max="0.999" step="0.001" value="0.920"></label>
               <input id="ripple-length" class="slider is-fullwidth" type="range" min="0.75" max="0.999" step="0.001" value="0.920">
             </div>
           </div>
@@ -93,11 +93,11 @@
           </div>
           <div class="control-grid">
             <div class="range-control">
-              <label for="reflection-strength"><span>Reflection</span><output id="reflection-strength-value">1.25</output></label>
+              <label for="reflection-strength"><span>Reflection</span><input id="reflection-strength-value" class="value-input" type="number" min="0" max="5" step="0.01" value="1.25"></label>
               <input id="reflection-strength" class="slider is-fullwidth" type="range" min="0" max="5" step="0.01" value="1.25">
             </div>
             <div class="range-control">
-              <label for="water-opacity"><span>Water opacity</span><output id="water-opacity-value">0.55</output></label>
+              <label for="water-opacity"><span>Water opacity</span><input id="water-opacity-value" class="value-input" type="number" min="0.05" max="1" step="0.01" value="0.55"></label>
               <input id="water-opacity" class="slider is-fullwidth" type="range" min="0.05" max="1" step="0.01" value="0.55">
             </div>
           </div>

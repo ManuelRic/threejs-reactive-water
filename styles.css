@@ -100,15 +100,24 @@ body {
   justify-content: space-between;
 }
 
-.range-control output {
+.value-input {
   background: rgba(45, 103, 119, 0.09);
   border: 1px solid rgba(45, 103, 119, 0.13);
   border-radius: 6px;
+  box-sizing: border-box;
   color: #173841;
   font-variant-numeric: tabular-nums;
+  font-weight: 650;
   min-width: 3.6rem;
   padding: 2px 7px;
   text-align: right;
+  width: 4.4rem;
+}
+
+.value-input:focus {
+  background: #ffffff;
+  border-color: #1f8ea5;
+  outline: 0;
 }
 
 .range-control input[type='range'] {
@@ -141,7 +150,8 @@ body {
 }
 
 .button-row .button:focus-visible,
-.range-control input[type='range']:focus-visible {
+.range-control input[type='range']:focus-visible,
+.value-input:focus-visible {
   outline: 2px solid #1f8ea5;
   outline-offset: 2px;
 }

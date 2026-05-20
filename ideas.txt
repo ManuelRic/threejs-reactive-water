@@ -22,3 +22,4 @@ technically, calculating the weight of the object I can calculate the amount of 
 
 still need to implement foam to wave above x height, or outside of how untochued wave structure would be
 
+fix wake jitter

@@ -3,8 +3,8 @@ const buoyancySlider = document.getElementById('buoyancy');
 const buoyancyValue = document.getElementById('buoyancy-value');
 const shipBuoyancySlider = document.getElementById('ship-buoyancy');
 const shipBuoyancyValue = document.getElementById('ship-buoyancy-value');
-const waveSizeSlider = document.getElementById('wave-size');
-const waveSizeValue = document.getElementById('wave-size-value');
+const waveAmplitudeSlider = document.getElementById('wave-amplitude');
+const waveAmplitudeValue = document.getElementById('wave-amplitude-value');
 const waveFrequencySlider = document.getElementById('wave-frequency');
 const waveFrequencyValue = document.getElementById('wave-frequency-value');
 const waveSpeedSlider = document.getElementById('wave-speed');
@@ -40,7 +40,7 @@ let reflectionStrength = Number(reflectionStrengthSlider.value);
 let waterOpacity = Number(waterOpacitySlider.value);
 const wakeHeightRecovery = 0.992;
 const maxWakeHeight = 5;
-let oceanWaveStrength = Number(waveSizeSlider.value);
+let oceanWaveStrength = Number(waveAmplitudeSlider.value);
 let oceanWaveFrequency = Number(waveFrequencySlider.value);
 let oceanWaveSpeed = Number(waveSpeedSlider.value);
 let oceanWaveSharpness = Number(waveSharpnessSlider.value);
@@ -1170,73 +1170,113 @@ class FloatingSphere {
 
   const debug = new Debug();
 
+  function decimalsForStep(step) {
+    const text = String(step);
+    const decimalIndex = text.indexOf('.');
+    return decimalIndex === -1 ? 0 : text.length - decimalIndex - 1;
+  }
+
+  function formatControlValue(value, slider) {
+    return Number(value).toFixed(decimalsForStep(slider.step));
+  }
+
+  function clampToSlider(value, slider) {
+    const min = Number(slider.min);
+    const max = Number(slider.max);
+    return Math.min(max, Math.max(min, value));
+  }
+
+  function setControlValue(slider, valueInput, value) {
+    const clampedValue = clampToSlider(value, slider);
+    const formattedValue = formatControlValue(clampedValue, slider);
+
+    slider.value = formattedValue;
+    valueInput.value = formattedValue;
+    return clampedValue;
+  }
+
+  function bindNumberInput(slider, valueInput) {
+    valueInput.addEventListener('change', () => {
+      const parsedValue = Number(valueInput.value);
+      const value = Number.isFinite(parsedValue) ? parsedValue : Number(slider.value);
+
+      setControlValue(slider, valueInput, value);
+      slider.dispatchEvent(new Event('input'));
+    });
+  }
+
+  function updateWaterWaveUniforms() {
+    if (!water.material) return;
+
+    water.material.uniforms['oceanWaveStrength'].value = oceanWaveStrength;
+    water.material.uniforms['oceanWaveFrequency'].value = oceanWaveFrequency;
+    water.material.uniforms['oceanWaveSpeed'].value = oceanWaveSpeed;
+    water.material.uniforms['oceanWaveSharpness'].value = oceanWaveSharpness;
+  }
+
+  function applyOceanWaveControlValues() {
+    setControlValue(waveAmplitudeSlider, waveAmplitudeValue, oceanWaveStrength);
+    setControlValue(waveFrequencySlider, waveFrequencyValue, oceanWaveFrequency);
+    setControlValue(waveSpeedSlider, waveSpeedValue, oceanWaveSpeed);
+    setControlValue(waveSharpnessSlider, waveSharpnessValue, oceanWaveSharpness);
+    updateWaterWaveUniforms();
+    cargoShip.requestFloatReset();
+  }
+
+  bindNumberInput(buoyancySlider, buoyancyValue);
+  bindNumberInput(shipBuoyancySlider, shipBuoyancyValue);
+  bindNumberInput(waveAmplitudeSlider, waveAmplitudeValue);
+  bindNumberInput(waveFrequencySlider, waveFrequencyValue);
+  bindNumberInput(waveSpeedSlider, waveSpeedValue);
+  bindNumberInput(waveSharpnessSlider, waveSharpnessValue);
+  bindNumberInput(wakeHeightSlider, wakeHeightValue);
+  bindNumberInput(rippleLengthSlider, rippleLengthValue);
+  bindNumberInput(reflectionStrengthSlider, reflectionStrengthValue);
+  bindNumberInput(waterOpacitySlider, waterOpacityValue);
+
   buoyancySlider.addEventListener('input', () => {
-    const value = Number(buoyancySlider.value);
-    buoyancyValue.textContent = value.toFixed(2);
+    const value = setControlValue(buoyancySlider, buoyancyValue, Number(buoyancySlider.value));
     floatingSphere.setBuoyancy(value);
   });
 
   shipBuoyancySlider.addEventListener('input', () => {
-    const value = Number(shipBuoyancySlider.value);
-    shipBuoyancyValue.textContent = value.toFixed(2);
+    const value = setControlValue(shipBuoyancySlider, shipBuoyancyValue, Number(shipBuoyancySlider.value));
     cargoShip.setBuoyancy(value);
   });
 
-  waveSizeSlider.addEventListener('input', () => {
-    oceanWaveStrength = Number(waveSizeSlider.value);
-    waveSizeValue.textContent = oceanWaveStrength.toFixed(3);
-
-    if (water.material) {
-      water.material.uniforms['oceanWaveStrength'].value = oceanWaveStrength;
-    }
-
+  waveAmplitudeSlider.addEventListener('input', () => {
+    oceanWaveStrength = setControlValue(waveAmplitudeSlider, waveAmplitudeValue, Number(waveAmplitudeSlider.value));
+    updateWaterWaveUniforms();
     cargoShip.requestFloatReset();
   });
 
   waveFrequencySlider.addEventListener('input', () => {
-    oceanWaveFrequency = Number(waveFrequencySlider.value);
-    waveFrequencyValue.textContent = oceanWaveFrequency.toFixed(2);
-
-    if (water.material) {
-      water.material.uniforms['oceanWaveFrequency'].value = oceanWaveFrequency;
-    }
-
+    oceanWaveFrequency = setControlValue(waveFrequencySlider, waveFrequencyValue, Number(waveFrequencySlider.value));
+    updateWaterWaveUniforms();
     cargoShip.requestFloatReset();
   });
 
   waveSpeedSlider.addEventListener('input', () => {
-    oceanWaveSpeed = Number(waveSpeedSlider.value);
-    waveSpeedValue.textContent = oceanWaveSpeed.toFixed(2);
-
-    if (water.material) {
-      water.material.uniforms['oceanWaveSpeed'].value = oceanWaveSpeed;
-    }
+    oceanWaveSpeed = setControlValue(waveSpeedSlider, waveSpeedValue, Number(waveSpeedSlider.value));
+    updateWaterWaveUniforms();
   });
 
   waveSharpnessSlider.addEventListener('input', () => {
-    oceanWaveSharpness = Number(waveSharpnessSlider.value);
-    waveSharpnessValue.textContent = oceanWaveSharpness.toFixed(2);
-
-    if (water.material) {
-      water.material.uniforms['oceanWaveSharpness'].value = oceanWaveSharpness;
-    }
-
+    oceanWaveSharpness = setControlValue(waveSharpnessSlider, waveSharpnessValue, Number(waveSharpnessSlider.value));
+    updateWaterWaveUniforms();
     cargoShip.requestFloatReset();
   });
 
   wakeHeightSlider.addEventListener('input', () => {
-    objectWakeHeightScale = Number(wakeHeightSlider.value);
-    wakeHeightValue.textContent = objectWakeHeightScale.toFixed(2);
+    objectWakeHeightScale = setControlValue(wakeHeightSlider, wakeHeightValue, Number(wakeHeightSlider.value));
   });
 
   rippleLengthSlider.addEventListener('input', () => {
-    rippleDistance = Number(rippleLengthSlider.value);
-    rippleLengthValue.textContent = rippleDistance.toFixed(3);
+    rippleDistance = setControlValue(rippleLengthSlider, rippleLengthValue, Number(rippleLengthSlider.value));
   });
 
   reflectionStrengthSlider.addEventListener('input', () => {
-    reflectionStrength = Number(reflectionStrengthSlider.value);
-    reflectionStrengthValue.textContent = reflectionStrength.toFixed(2);
+    reflectionStrength = setControlValue(reflectionStrengthSlider, reflectionStrengthValue, Number(reflectionStrengthSlider.value));
 
     if (water.material) {
       water.material.uniforms['reflectionStrength'].value = reflectionStrength;
@@ -1244,8 +1284,7 @@ class FloatingSphere {
   });
 
   waterOpacitySlider.addEventListener('input', () => {
-    waterOpacity = Number(waterOpacitySlider.value);
-    waterOpacityValue.textContent = waterOpacity.toFixed(2);
+    waterOpacity = setControlValue(waterOpacitySlider, waterOpacityValue, Number(waterOpacitySlider.value));
 
     if (water.material) {
       water.material.uniforms['waterOpacity'].value = waterOpacity;
@@ -2070,16 +2109,16 @@ class FloatingSphere {
   const loaded = [waterSimulation.loaded, caustics.loaded, water.loaded, pool.loaded, cargoShip.loaded, debug.loaded];
 
   Promise.all(loaded).then(() => {
-    buoyancyValue.textContent = Number(buoyancySlider.value).toFixed(2);
-    shipBuoyancyValue.textContent = Number(shipBuoyancySlider.value).toFixed(2);
-    waveSizeValue.textContent = oceanWaveStrength.toFixed(3);
-    waveFrequencyValue.textContent = oceanWaveFrequency.toFixed(2);
-    waveSpeedValue.textContent = oceanWaveSpeed.toFixed(2);
-    waveSharpnessValue.textContent = oceanWaveSharpness.toFixed(2);
-    wakeHeightValue.textContent = objectWakeHeightScale.toFixed(2);
-    rippleLengthValue.textContent = rippleDistance.toFixed(3);
-    reflectionStrengthValue.textContent = reflectionStrength.toFixed(2);
-    waterOpacityValue.textContent = waterOpacity.toFixed(2);
+    setControlValue(buoyancySlider, buoyancyValue, Number(buoyancySlider.value));
+    setControlValue(shipBuoyancySlider, shipBuoyancyValue, Number(shipBuoyancySlider.value));
+    setControlValue(waveAmplitudeSlider, waveAmplitudeValue, oceanWaveStrength);
+    setControlValue(waveFrequencySlider, waveFrequencyValue, oceanWaveFrequency);
+    setControlValue(waveSpeedSlider, waveSpeedValue, oceanWaveSpeed);
+    setControlValue(waveSharpnessSlider, waveSharpnessValue, oceanWaveSharpness);
+    setControlValue(wakeHeightSlider, wakeHeightValue, objectWakeHeightScale);
+    setControlValue(rippleLengthSlider, rippleLengthValue, rippleDistance);
+    setControlValue(reflectionStrengthSlider, reflectionStrengthValue, reflectionStrength);
+    setControlValue(waterOpacitySlider, waterOpacityValue, waterOpacity);
     setToggleButtonState(toggleSphereButton, floatingSphere.visible);
     setToggleButtonState(toggleShipButton, cargoShip.visible);
     updateShipMovementModeButtons();
