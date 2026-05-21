@@ -15,6 +15,7 @@ attribute vec3 position;
 varying vec3 eye;
 varying vec3 pos;
 varying vec4 reflectionCoord;
+varying vec2 waterUv;
 
 struct OceanWave {
   vec2 direction;
@@ -66,7 +67,8 @@ vec3 oceanDisplacement(vec2 point) {
 
 
 void main() {
-  vec4 info = texture2D(water, position.xy * 0.5 + 0.5);
+  waterUv = position.xy * 0.5 + 0.5;
+  vec4 info = texture2D(water, waterUv);
   pos = position.xzy;
   vec3 ocean = oceanDisplacement(pos.xz);
   pos.xz += ocean.xz;

@@ -5,6 +5,7 @@ precision highp int;
 
 uniform float underwater;
 uniform samplerCube sky;
+uniform sampler2D waterImageTexture;
 uniform sampler2D reflectionTexture;
 uniform float time;
 uniform float oceanWaveStrength;
@@ -13,6 +14,7 @@ uniform float oceanWaveSpeed;
 uniform float oceanWaveSharpness;
 uniform float wakeWaveStrength;
 uniform float waterTextureEnabled;
+uniform float waterImageTextureEnabled;
 uniform float waterOpacity;
 uniform float foamHeightThreshold;
 uniform float foamHeightSoftness;
@@ -28,6 +30,7 @@ uniform float reflectionStrength;
 varying vec3 eye;
 varying vec3 pos;
 varying vec4 reflectionCoord;
+varying vec2 waterUv;
 
 
 vec3 getSurfaceRayColor(vec3 origin, vec3 ray, vec3 waterColor) {
@@ -181,6 +184,30 @@ vec3 oceanNormal(vec2 point) {
   ));
 }
 
+vec2 waterTextureFlow(vec2 point) {
+  float strength = oceanWaveStrength * oceanWaveSharpness;
+  vec2 flow = vec2(0.0);
+
+  flow += normalize(vec2(1.0, 0.24)) * cos(dot(point, normalize(vec2(1.0, 0.24))) * 4.2 * oceanWaveFrequency + time * 0.85 * oceanWaveSpeed) * 0.018;
+  flow += normalize(vec2(0.82, 0.55)) * cos(dot(point, normalize(vec2(0.82, 0.55))) * 6.8 * oceanWaveFrequency + time * 1.22 * oceanWaveSpeed) * 0.012;
+  flow += normalize(vec2(-0.35, 1.0)) * cos(dot(point, normalize(vec2(-0.35, 1.0))) * 10.5 * oceanWaveFrequency + time * 1.85 * oceanWaveSpeed) * 0.007;
+
+  return flow * strength;
+}
+
+vec2 waterTextureScroll(float textureScale) {
+  float frequencyScale = max(0.001, oceanWaveFrequency);
+  vec2 scroll = vec2(0.0);
+
+  scroll += normalize(vec2(1.0, 0.24)) * (time * 0.85 * oceanWaveSpeed / (4.2 * frequencyScale)) * 0.55;
+  scroll += normalize(vec2(0.82, 0.55)) * (time * 1.22 * oceanWaveSpeed / (6.8 * frequencyScale)) * 0.32;
+  scroll += normalize(vec2(-0.35, 1.0)) * (time * 1.85 * oceanWaveSpeed / (10.5 * frequencyScale)) * 0.18;
+  scroll += normalize(vec2(0.2, 1.0)) * (time * 2.65 * oceanWaveSpeed / (17.0 * frequencyScale)) * 0.08;
+  scroll += normalize(vec2(-1.0, 0.15)) * (time * 3.4 * oceanWaveSpeed / (24.0 * frequencyScale)) * 0.045;
+
+  return scroll * textureScale * 0.5 * oceanWaveStrength;
+}
+
 
 void main() {
   vec2 coord = pos.xz * 0.5 + 0.5;
@@ -256,6 +283,14 @@ void main() {
   vec2 mottleNormal = vec2(waterPattern - 0.5, waterFinePattern - 0.5) * 0.11 * waterMottleEnabled;
   normal = normalize(normal + vec3(mottleNormal.x, 0.0, mottleNormal.y));
   float waterMottle = mix(1.0, mix(0.88, 1.08, waterPattern), waterMottleEnabled);
+  vec2 surfacePoint = waterUv * 2.0 - 1.0;
+  float waterImageScale = 2.7;
+  vec2 waterImageCoord = waterUv * waterImageScale + waterTextureScroll(waterImageScale) + waterTextureFlow(surfacePoint);
+  waterImageCoord += info.ba * 0.48 * waterTextureEnabled;
+  waterImageCoord += vec2(heightSlope + oceanSlope, oceanSlope - heightSlope) * 0.18;
+  vec3 waterImageColor = texture2D(waterImageTexture, waterImageCoord).rgb;
+  vec3 waterTextureColor = mix(vec3(0.02, 0.22, 0.34), waterImageColor * vec3(0.7, 1.05, 1.25), 0.75);
+  float waterImageBlend = waterImageTextureEnabled * (1.0 - foam * 0.45);
   vec3 incomingRay = normalize(pos - eye);
 
   if (underwater == 1.) {
@@ -268,6 +303,7 @@ void main() {
     vec3 refractedColor = getSurfaceRayColor(pos, refractedRay, vec3(1.0)) * vec3(0.8, 1.0, 1.1);
     vec3 finalColor = mix(reflectedColor, refractedColor, (1.0 - fresnel) * length(refractedRay));
     finalColor *= waterMottle;
+    finalColor = mix(finalColor, finalColor * waterTextureColor * 2.35, waterImageBlend * 0.32);
     finalColor = mix(finalColor, vec3(0.82, 0.92, 0.96), foam * 0.32);
 
     gl_FragColor = vec4(finalColor, waterOpacity);
@@ -282,6 +318,7 @@ void main() {
     vec3 visibleWaterColor = mix(refractedColor, opaqueWaterColor, waterOpacity);
     vec3 finalColor = mix(visibleWaterColor, reflectedColor, fresnel);
     finalColor *= waterMottle;
+    finalColor = mix(finalColor, waterTextureColor, waterImageBlend * 0.34);
     vec2 reflectionDistortion = normal.xz * 0.045 + info.ba * 0.055 * waterTextureEnabled;
     vec4 planarReflection = getPlanarReflection(reflectionCoord, reflectionDistortion);
     float objectReflection = planarReflection.a * fresnel * reflectionStrength * (1.0 - foam * 0.65);

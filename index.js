@@ -57,6 +57,7 @@ let waveFoamEnabled = 0;
 let extraFoamEnabled = 0;
 let foamMottleEnabled = 1;
 let waterMottleEnabled = 0;
+let waterImageTextureEnabled = 1;
 let waterTextureEnabled = 1;
 let wireframeEnabled = false;
 const extraFoamRippleBoost = 0;
@@ -225,6 +226,11 @@ loadFile('shaders/utils.glsl').then((utils) => {
   const textureloader = new THREE.TextureLoader();
 
   const tiles = textureloader.load('tiles.jpg');
+  const waterImageTexture = textureloader.load('images/textures/water.jpg');
+  waterImageTexture.wrapS = THREE.RepeatWrapping;
+  waterImageTexture.wrapT = THREE.RepeatWrapping;
+  waterImageTexture.minFilter = THREE.LinearFilter;
+  waterImageTexture.magFilter = THREE.LinearFilter;
 
   class WaterSimulation {
 
@@ -394,6 +400,7 @@ loadFile('shaders/utils.glsl').then((utils) => {
               tiles: { value: tiles },
               sky: { value: textureCube },
               water: { value: null },
+              waterImageTexture: { value: waterImageTexture },
               causticTex: { value: null },
               reflectionTexture: { value: reflectionTarget.texture },
               reflectionTextureMatrix: { value: reflectionTextureMatrix },
@@ -406,6 +413,7 @@ loadFile('shaders/utils.glsl').then((utils) => {
               oceanWaveSharpness: { value: oceanWaveSharpness },
               wakeWaveStrength: { value: wakeWaveStrength },
               waterTextureEnabled: { value: waterTextureEnabled },
+              waterImageTextureEnabled: { value: waterImageTextureEnabled },
               foamHeightThreshold: { value: foamHeightThreshold },
               foamHeightSoftness: { value: foamHeightSoftness },
               foamFromHeightStrength: { value: foamFromHeightStrength },
@@ -1416,11 +1424,11 @@ class FloatingSphere {
   });
 
   toggleWaterTextureButton.addEventListener('click', () => {
-    waterMottleEnabled = waterMottleEnabled > 0 ? 0 : 1;
-    setToggleButtonState(toggleWaterTextureButton, waterMottleEnabled > 0);
+    waterImageTextureEnabled = waterImageTextureEnabled > 0 ? 0 : 1;
+    setToggleButtonState(toggleWaterTextureButton, waterImageTextureEnabled > 0);
 
     if (water.material) {
-      water.material.uniforms['waterMottleEnabled'].value = waterMottleEnabled;
+      water.material.uniforms['waterImageTextureEnabled'].value = waterImageTextureEnabled;
     }
   });
 
@@ -2126,7 +2134,7 @@ class FloatingSphere {
     setToggleButtonState(toggleWaveFoamButton, waveFoamEnabled > 0);
     setToggleButtonState(toggleExtraFoamButton, extraFoamEnabled > 0);
     setToggleButtonState(toggleFoamTextureButton, foamMottleEnabled > 0);
-    setToggleButtonState(toggleWaterTextureButton, waterMottleEnabled > 0);
+    setToggleButtonState(toggleWaterTextureButton, waterImageTextureEnabled > 0);
     setToggleButtonState(toggleWireframeButton, wireframeEnabled);
     applyWireframeMode();
     updateFoamUniforms();
