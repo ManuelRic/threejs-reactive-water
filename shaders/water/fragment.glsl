@@ -12,9 +12,11 @@ uniform float oceanWaveStrength;
 uniform float oceanWaveFrequency;
 uniform float oceanWaveSpeed;
 uniform float oceanWaveSharpness;
+uniform float fftWavesEnabled;
 uniform float wakeWaveStrength;
 uniform float waterTextureEnabled;
 uniform float waterImageTextureEnabled;
+uniform float waterExtent;
 uniform float waterOpacity;
 uniform float foamHeightThreshold;
 uniform float foamHeightSoftness;
@@ -37,10 +39,10 @@ vec3 getSurfaceRayColor(vec3 origin, vec3 ray, vec3 waterColor) {
   vec3 color;
 
   if (ray.y < 0.0) {
-    vec2 t = intersectCube(origin, ray, vec3(-1.0, -poolHeight, -1.0), vec3(1.0, 2.0, 1.0));
+    vec2 t = intersectCube(origin, ray, vec3(-poolHalfSize, -poolHeight, -poolHalfSize), vec3(poolHalfSize, 2.0, poolHalfSize));
     color = getWallColor(origin + ray * t.y);
   } else {
-    vec2 t = intersectCube(origin, ray, vec3(-1.0, -poolHeight, -1.0), vec3(1.0, 2.0, 1.0));
+    vec2 t = intersectCube(origin, ray, vec3(-poolHalfSize, -poolHeight, -poolHalfSize), vec3(poolHalfSize, 2.0, poolHalfSize));
     vec3 hit = origin + ray * t.y;
     if (hit.y < 7.0 / 12.0) {
       color = getWallColor(hit);
@@ -127,7 +129,7 @@ float gerstnerHeight(vec2 point, OceanWave wave) {
   return sharpenCrest(crest, stormAmount()) * wave.amplitude;
 }
 
-float oceanHeight(vec2 point) {
+float gerstnerOceanHeight(vec2 point) {
   float height = 0.0;
 
   height += gerstnerHeight(point, OceanWave(vec2(1.0, 0.24), 4.2, 0.85, 0.55, 0.62));
@@ -137,6 +139,40 @@ float oceanHeight(vec2 point) {
   height += gerstnerHeight(point, OceanWave(vec2(-1.0, 0.15), 24.0, 3.4, 0.045, 0.18));
 
   return height * oceanWaveStrength;
+}
+
+float spectralWaveHeight(vec2 point, vec2 direction, float frequency, float speed, float amplitude, float phase) {
+  vec2 waveDirection = normalize(direction);
+  float angle = dot(point, waveDirection) * frequency * oceanWaveFrequency + time * speed * oceanWaveSpeed + phase;
+
+  return sin(angle) * amplitude;
+}
+
+float spectralOceanHeight(vec2 point) {
+  float height = 0.0;
+
+  height += spectralWaveHeight(point, vec2(1.00, 0.18), 2.60, 0.56, 0.42, 0.30);
+  height += spectralWaveHeight(point, vec2(0.92, 0.38), 3.70, 0.72, 0.32, 2.10);
+  height += spectralWaveHeight(point, vec2(0.72, 0.70), 5.20, 0.96, 0.24, 4.50);
+  height += spectralWaveHeight(point, vec2(0.36, 0.94), 6.80, 1.15, 0.18, 1.40);
+  height += spectralWaveHeight(point, vec2(-0.10, 1.00), 8.60, 1.42, 0.14, 5.30);
+  height += spectralWaveHeight(point, vec2(-0.42, 0.91), 10.80, 1.68, 0.105, 0.80);
+  height += spectralWaveHeight(point, vec2(0.58, -0.82), 12.60, 1.94, 0.080, 3.70);
+  height += spectralWaveHeight(point, vec2(-0.74, 0.66), 15.20, 2.22, 0.060, 2.80);
+  height += spectralWaveHeight(point, vec2(0.98, -0.22), 18.50, 2.55, 0.045, 5.90);
+  height += spectralWaveHeight(point, vec2(-0.88, -0.48), 21.00, 2.88, 0.034, 1.90);
+  height += spectralWaveHeight(point, vec2(0.18, 0.98), 24.80, 3.25, 0.026, 4.10);
+  height += spectralWaveHeight(point, vec2(-0.26, 0.96), 29.50, 3.68, 0.020, 0.55);
+  height += spectralWaveHeight(point, vec2(0.64, 0.77), 34.00, 4.05, 0.016, 3.20);
+  height += spectralWaveHeight(point, vec2(-0.56, 0.83), 40.00, 4.52, 0.012, 5.05);
+  height += spectralWaveHeight(point, vec2(0.86, 0.50), 48.00, 5.10, 0.009, 2.45);
+  height += spectralWaveHeight(point, vec2(-0.98, 0.18), 56.00, 5.75, 0.007, 4.85);
+
+  return height * oceanWaveStrength;
+}
+
+float oceanHeight(vec2 point) {
+  return mix(gerstnerOceanHeight(point), spectralOceanHeight(point), fftWavesEnabled);
 }
 
 float oceanForwardFoam(vec2 point) {
@@ -210,7 +246,7 @@ vec2 waterTextureScroll(float textureScale) {
 
 
 void main() {
-  vec2 coord = pos.xz * 0.5 + 0.5;
+  vec2 coord = pos.xz / (waterExtent * 2.0) + 0.5;
   vec2 foamCoord = coord;
   vec4 info = texture2D(water, coord);
   vec4 heightInfo = info;
@@ -283,9 +319,8 @@ void main() {
   vec2 mottleNormal = vec2(waterPattern - 0.5, waterFinePattern - 0.5) * 0.11 * waterMottleEnabled;
   normal = normalize(normal + vec3(mottleNormal.x, 0.0, mottleNormal.y));
   float waterMottle = mix(1.0, mix(0.88, 1.08, waterPattern), waterMottleEnabled);
-  vec2 surfacePoint = waterUv * 2.0 - 1.0;
   float waterImageScale = 2.7;
-  vec2 waterImageCoord = waterUv * waterImageScale + waterTextureScroll(waterImageScale) + waterTextureFlow(surfacePoint);
+  vec2 waterImageCoord = waterUv * waterImageScale + waterTextureScroll(waterImageScale) + waterTextureFlow(pos.xz);
   waterImageCoord += info.ba * 0.48 * waterTextureEnabled;
   waterImageCoord += vec2(heightSlope + oceanSlope, oceanSlope - heightSlope) * 0.18;
   vec3 waterImageColor = texture2D(waterImageTexture, waterImageCoord).rgb;

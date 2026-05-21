@@ -5,13 +5,14 @@ varying vec3 oldPos;
 varying vec3 newPos;
 varying vec3 ray;
 attribute vec3 position;
+uniform float waterExtent;
 
 #include <utils>
 
 
 /* project the ray onto the plane */
 vec3 project(vec3 origin, vec3 ray, vec3 refractedLight) {
-  vec2 tcube = intersectCube(origin, ray, vec3(-1.0, -poolHeight, -1.0), vec3(1.0, 2.0, 1.0));
+  vec2 tcube = intersectCube(origin, ray, vec3(-poolHalfSize, -poolHeight, -poolHalfSize), vec3(poolHalfSize, 2.0, poolHalfSize));
   origin += ray * tcube.y;
   float tplane = (-origin.y - 1.0) / refractedLight.y;
 
@@ -20,7 +21,7 @@ vec3 project(vec3 origin, vec3 ray, vec3 refractedLight) {
 
 
 void main() {
-  vec4 info = texture2D(water, position.xy * 0.5 + 0.5);
+  vec4 info = texture2D(water, position.xy / (waterExtent * 2.0) + 0.5);
   info.ba *= 0.5;
   vec3 normal = vec3(info.b, sqrt(1.0 - dot(info.ba, info.ba)), info.a);
 
@@ -30,5 +31,5 @@ void main() {
   oldPos = project(position.xzy, refractedLight, refractedLight);
   newPos = project(position.xzy + vec3(0.0, info.r, 0.0), ray, refractedLight);
 
-  gl_Position = vec4(0.75 * (newPos.xz + refractedLight.xz / refractedLight.y), 0.0, 1.0);
+  gl_Position = vec4(0.75 * (newPos.xz + refractedLight.xz / refractedLight.y) / poolHalfSize, 0.0, 1.0);
 }

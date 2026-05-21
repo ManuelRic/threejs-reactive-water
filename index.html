@@ -63,6 +63,33 @@
               <input id="wave-sharpness" class="slider is-fullwidth" type="range" min="0" max="2.5" step="0.01" value="1">
             </div>
           </div>
+          <div class="button-row">
+            <button id="toggle-fft-waves" class="button is-small is-info" type="button">FFT waves</button>
+            <button id="toggle-wave-generator" class="button is-small is-info" type="button">Wave generator</button>
+            <button id="toggle-walls" class="button is-small is-info" type="button">Walls</button>
+          </div>
+          <div class="control-grid">
+            <div class="range-control">
+              <label for="generator-frequency"><span>Generator frequency</span><input id="generator-frequency-value" class="value-input" type="number" min="0.1" max="4" step="0.01" value="1.15"></label>
+              <input id="generator-frequency" class="slider is-fullwidth" type="range" min="0.1" max="4" step="0.01" value="1.15">
+            </div>
+            <div class="range-control">
+              <label for="generator-strength"><span>Generator strength</span><input id="generator-strength-value" class="value-input" type="number" min="0" max="0.08" step="0.001" value="0.026"></label>
+              <input id="generator-strength" class="slider is-fullwidth" type="range" min="0" max="0.08" step="0.001" value="0.026">
+            </div>
+            <div class="range-control">
+              <label for="generator-width"><span>Generator width</span><input id="generator-width-value" class="value-input" type="number" min="0.4" max="4" step="0.01" value="3.20"></label>
+              <input id="generator-width" class="slider is-fullwidth" type="range" min="0.4" max="4" step="0.01" value="3.2">
+            </div>
+            <div class="range-control">
+              <label for="generator-radius"><span>Generator radius</span><input id="generator-radius-value" class="value-input" type="number" min="0.02" max="0.3" step="0.001" value="0.120"></label>
+              <input id="generator-radius" class="slider is-fullwidth" type="range" min="0.02" max="0.3" step="0.001" value="0.12">
+            </div>
+            <div class="range-control">
+              <label for="generator-z"><span>Generator Z</span><input id="generator-z-value" class="value-input" type="number" min="-2" max="2" step="0.01" value="-1.65"></label>
+              <input id="generator-z" class="slider is-fullwidth" type="range" min="-2" max="2" step="0.01" value="-1.65">
+            </div>
+          </div>
         </div>
 
         <div class="control-group">

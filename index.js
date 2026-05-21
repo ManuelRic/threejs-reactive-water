@@ -24,6 +24,19 @@ const toggleShipButton = document.getElementById('toggle-ship');
 const shipModeRandomButton = document.getElementById('ship-mode-random');
 const shipModeCircleButton = document.getElementById('ship-mode-circle');
 const shipModeStoppedButton = document.getElementById('ship-mode-stopped');
+const toggleFftWavesButton = document.getElementById('toggle-fft-waves');
+const toggleWaveGeneratorButton = document.getElementById('toggle-wave-generator');
+const toggleWallsButton = document.getElementById('toggle-walls');
+const generatorFrequencySlider = document.getElementById('generator-frequency');
+const generatorFrequencyValue = document.getElementById('generator-frequency-value');
+const generatorStrengthSlider = document.getElementById('generator-strength');
+const generatorStrengthValue = document.getElementById('generator-strength-value');
+const generatorWidthSlider = document.getElementById('generator-width');
+const generatorWidthValue = document.getElementById('generator-width-value');
+const generatorRadiusSlider = document.getElementById('generator-radius');
+const generatorRadiusValue = document.getElementById('generator-radius-value');
+const generatorZSlider = document.getElementById('generator-z');
+const generatorZValue = document.getElementById('generator-z-value');
 const toggleObjectFoamButton = document.getElementById('toggle-object-foam');
 const toggleWaveFoamButton = document.getElementById('toggle-wave-foam');
 const toggleExtraFoamButton = document.getElementById('toggle-extra-foam');
@@ -33,6 +46,9 @@ const toggleWireframeButton = document.getElementById('toggle-wireframe');
 
 const width = canvas.width;
 const height = canvas.height;
+const waterExtent = 2.5;
+const wallExtent = 2.0;
+const maxWaterBounceObjects = 16;
 
 // Lower values make wake waves fade sooner. Higher values let them travel farther.
 let rippleDistance = Number(rippleLengthSlider.value);
@@ -60,6 +76,9 @@ let waterMottleEnabled = 0;
 let waterImageTextureEnabled = 1;
 let waterTextureEnabled = 1;
 let wireframeEnabled = false;
+let fftWavesEnabled = 1;
+let waveGeneratorEnabled = true;
+let wallsEnabled = true;
 const extraFoamRippleBoost = 0;
 const wakeDropCount = 5;
 const wakeTrailSpacing = 0.055;
@@ -67,6 +86,25 @@ const wakeSpread = 0.72;
 const wakeStrength = 0.018;
 const wakeTroughStrength = -0.014;
 const wakeMinMovement = 0.006;
+const waveEmitterTypeLine = 'line';
+const waveEmitterTypePoint = 'point';
+const waveEmitters = [
+  {
+    type: waveEmitterTypeLine,
+    enabled: true,
+    origin: { x: 0, z: -1.65 },
+    direction: { x: 0, z: 1 },
+    width: 3.2,
+    samples: 15,
+    frequency: 1.15,
+    radius: 0.12,
+    strength: 0.026,
+    troughStrength: -0.016,
+    troughOffset: 0.18,
+    nextEmitTime: null,
+  },
+];
+const primaryWaveEmitter = waveEmitters[0];
 const shipTrackWakeCount = 8;
 const shipTrackWakeSpacing = 0.06;
 const shipTrackWakeStrength = 0.018;
@@ -90,7 +128,7 @@ const shipMovementYawOffset = Math.PI / 2;
 const shipAutopilotSpeed = 0.18;
 const shipAutopilotTurnBiasMax = 0.45;
 const shipAutopilotTargetRadius = 0.12;
-const shipAutopilotBounds = 0.72;
+const shipAutopilotBounds = 2.0;
 const shipAutopilotTurnChangeMinTime = 1.8;
 const shipAutopilotTurnChangeMaxTime = 3.8;
 const shipAutopilotTurnSmoothness = 1.6;
@@ -99,7 +137,7 @@ const shipMovementModeRandom = 'random';
 const shipMovementModeCircle = 'circle';
 const shipMovementModeStopped = 'stopped';
 const shipCircleCenter = { x: 0, z: 0 };
-const shipCircleRadius = 0.48;
+const shipCircleRadius = 1.35;
 const shipCircleAngularSpeed = shipAutopilotSpeed / shipCircleRadius;
 const shipYawSmoothness = 5.2;
 const shipWaveTiltStart = 0.055;
@@ -139,8 +177,8 @@ loadFile('shaders/utils.glsl').then((utils) => {
   const cameraOffset = new THREE.Vector3();
   const cameraSpherical = new THREE.Spherical();
   const minCameraDistance = 1.25;
-  const maxCameraDistance = 6.0;
-  camera.position.set(0, 1.15, -3.35);
+  const maxCameraDistance = 9.0;
+  camera.position.set(0, 1.75, -5.25);
   camera.lookAt(cameraTarget);
   cameraSpherical.setFromVector3(camera.position.clone().sub(cameraTarget));
 
@@ -173,6 +211,45 @@ loadFile('shaders/utils.glsl').then((utils) => {
   );
 
   const objectScene = new THREE.Scene();
+  const waterBounceBounds = new THREE.Box3();
+  const waterBounceRectValues = Array.from({ length: maxWaterBounceObjects }, () => new THREE.Vector4());
+
+  function registerWaterBounceObject(object) {
+    object.userData.waterBounce = true;
+  }
+
+  function worldToWaterUv(value) {
+    return value / (waterExtent * 2) + 0.5;
+  }
+
+  function updateWaterBounceRects() {
+    let count = 0;
+
+    objectScene.traverse((object) => {
+      if (!object.userData.waterBounce || !object.visible || count >= maxWaterBounceObjects) return;
+
+      waterBounceBounds.setFromObject(object);
+      const minX = Math.max(-waterExtent, waterBounceBounds.min.x);
+      const maxX = Math.min(waterExtent, waterBounceBounds.max.x);
+      const minZ = Math.max(-waterExtent, waterBounceBounds.min.z);
+      const maxZ = Math.min(waterExtent, waterBounceBounds.max.z);
+
+      if (minX >= maxX || minZ >= maxZ) return;
+
+      waterBounceRectValues[count].set(
+        worldToWaterUv(minX),
+        worldToWaterUv(minZ),
+        worldToWaterUv(maxX),
+        worldToWaterUv(maxZ)
+      );
+      count++;
+    });
+
+    if (waterSimulation && waterSimulation._updateMesh) {
+      waterSimulation._updateMesh.material.uniforms['waterBounceCount'].value = count;
+      waterSimulation._updateMesh.material.uniforms['waterBounceRects'].value = waterBounceRectValues;
+    }
+  }
 
   // Light direction
   const light = [0.7559289460184544, 0.7559289460184544, -0.3779644730092272];
@@ -192,7 +269,7 @@ loadFile('shaders/utils.glsl').then((utils) => {
   let previousMouseX = 0;
   let previousMouseY = 0;
 
-  const targetgeometry = new THREE.PlaneGeometry(2, 2);
+  const targetgeometry = new THREE.PlaneGeometry(waterExtent * 2, waterExtent * 2);
   for (let vertex of targetgeometry.vertices) {
     vertex.z = - vertex.y;
     vertex.y = 0.;
@@ -278,6 +355,8 @@ loadFile('shaders/utils.glsl').then((utils) => {
               rippleDistance: { value: rippleDistance },
               wakeHeightRecovery: { value: wakeHeightRecovery },
               maxWakeHeight: { value: maxWakeHeight },
+              waterBounceCount: { value: 0 },
+              waterBounceRects: { value: waterBounceRectValues },
               texture: { value: null },
           },
           vertexShader: vertexShader,
@@ -310,8 +389,8 @@ loadFile('shaders/utils.glsl').then((utils) => {
 
     getHeightAt(renderer, x, z) {
       const pixel = new Float32Array(4);
-      const px = Math.min(255, Math.max(0, Math.floor((x * 0.5 + 0.5) * 256)));
-      const py = Math.min(255, Math.max(0, Math.floor((z * 0.5 + 0.5) * 256)));
+      const px = Math.min(255, Math.max(0, Math.floor(((x / waterExtent) * 0.5 + 0.5) * 256)));
+      const py = Math.min(255, Math.max(0, Math.floor(((z / waterExtent) * 0.5 + 0.5) * 256)));
 
       try {
         renderer.readRenderTargetPixels(this.texture, px, py, 1, 1, pixel);
@@ -359,6 +438,7 @@ loadFile('shaders/utils.glsl').then((utils) => {
           uniforms: {
               light: { value: light },
               water: { value: null },
+              waterExtent: { value: waterExtent },
           },
           vertexShader: vertexShader,
           fragmentShader: fragmentShader,
@@ -385,7 +465,7 @@ loadFile('shaders/utils.glsl').then((utils) => {
   class Water {
 
     constructor() {
-      this.geometry = new THREE.PlaneBufferGeometry(2, 2, 200, 200);
+      this.geometry = new THREE.PlaneBufferGeometry(waterExtent * 2, waterExtent * 2, 280, 280);
 
       const shadersPromises = [
         loadFile('shaders/water/vertex.glsl'),
@@ -411,9 +491,11 @@ loadFile('shaders/utils.glsl').then((utils) => {
               oceanWaveFrequency: { value: oceanWaveFrequency },
               oceanWaveSpeed: { value: oceanWaveSpeed },
               oceanWaveSharpness: { value: oceanWaveSharpness },
+              fftWavesEnabled: { value: fftWavesEnabled },
               wakeWaveStrength: { value: wakeWaveStrength },
               waterTextureEnabled: { value: waterTextureEnabled },
               waterImageTextureEnabled: { value: waterImageTextureEnabled },
+              waterExtent: { value: waterExtent },
               foamHeightThreshold: { value: foamHeightThreshold },
               foamHeightSoftness: { value: foamHeightSoftness },
               foamFromHeightStrength: { value: foamFromHeightStrength },
@@ -482,10 +564,10 @@ loadFile('shaders/utils.glsl').then((utils) => {
     constructor() {
       this._geometry = new THREE.BufferGeometry();
       const vertices = new Float32Array([
-        -1, 1, -1,
-        -1, 1, 1,
-        1, 1, -1,
-        1, 1, 1
+        -waterExtent, 1, -waterExtent,
+        -waterExtent, 1, waterExtent,
+        waterExtent, 1, -waterExtent,
+        waterExtent, 1, waterExtent
       ]);
       const indices = new Uint32Array([
         0, 1, 2,
@@ -534,22 +616,22 @@ loadFile('shaders/utils.glsl').then((utils) => {
       this._geometry = new THREE.BufferGeometry();
 
       const vertices = new Float32Array([
-        -1, -1, -1,
-        -1, 0, -1,
-        1, -1, -1,
-        1, 0, -1,
-        1, -1, -1,
-        1, 0, -1,
-        1, -1, 1,
-        1, 0, 1,
-        1, -1, 1,
-        1, 0, 1,
-        -1, -1, 1,
-        -1, 0, 1,
-        -1, -1, 1,
-        -1, 0, 1,
-        -1, -1, -1,
-        -1, 0, -1
+        -waterExtent, -1, -waterExtent,
+        -waterExtent, 0, -waterExtent,
+        waterExtent, -1, -waterExtent,
+        waterExtent, 0, -waterExtent,
+        waterExtent, -1, -waterExtent,
+        waterExtent, 0, -waterExtent,
+        waterExtent, -1, waterExtent,
+        waterExtent, 0, waterExtent,
+        waterExtent, -1, waterExtent,
+        waterExtent, 0, waterExtent,
+        -waterExtent, -1, waterExtent,
+        -waterExtent, 0, waterExtent,
+        -waterExtent, -1, waterExtent,
+        -waterExtent, 0, waterExtent,
+        -waterExtent, -1, -waterExtent,
+        -waterExtent, 0, -waterExtent
       ]);
       const indices = new Uint16Array([
         0, 1, 2,
@@ -578,6 +660,50 @@ loadFile('shaders/utils.glsl').then((utils) => {
 
     draw(renderer) {
       renderer.render(this._mesh, camera);
+    }
+
+  }
+
+
+  class BoundaryWalls {
+
+    constructor() {
+      this.group = new THREE.Group();
+      const wallHeight = 0.5;
+      const wallThickness = 0.12;
+      const wallY = wallHeight * 0.5 - 0.05;
+      const material = new THREE.MeshPhongMaterial({
+        color: 0xb8c1c5,
+        shininess: 18,
+        specular: 0x333333,
+      });
+
+      const longWallGeometry = new THREE.BoxBufferGeometry(wallExtent * 2 + wallThickness * 2, wallHeight, wallThickness);
+      const sideWallGeometry = new THREE.BoxBufferGeometry(wallThickness, wallHeight, wallExtent * 2);
+
+      const northWall = new THREE.Mesh(longWallGeometry, material);
+      northWall.position.set(0, wallY, -wallExtent - wallThickness * 0.5);
+      const southWall = new THREE.Mesh(longWallGeometry, material);
+      southWall.position.set(0, wallY, wallExtent + wallThickness * 0.5);
+      const eastWall = new THREE.Mesh(sideWallGeometry, material);
+      eastWall.position.set(wallExtent + wallThickness * 0.5, wallY, 0);
+      const westWall = new THREE.Mesh(sideWallGeometry, material);
+      westWall.position.set(-wallExtent - wallThickness * 0.5, wallY, 0);
+
+      this.group.add(northWall, southWall, eastWall, westWall);
+      objectScene.add(this.group);
+      registerWaterBounceObject(northWall);
+      registerWaterBounceObject(southWall);
+      registerWaterBounceObject(eastWall);
+      registerWaterBounceObject(westWall);
+    }
+
+    draw(renderer) {
+      renderer.render(this.group, camera);
+    }
+
+    setVisible(visible) {
+      this.group.visible = visible;
     }
 
   }
@@ -1160,6 +1286,7 @@ class FloatingSphere {
   const caustics = new Caustics(water.geometry);
   const pool = new Pool();
   const waterVolume = new WaterVolume();
+  const boundaryWalls = new BoundaryWalls();
   const floatingSphere = new FloatingSphere();
   const cargoShip = new CargoShip();
   floatingSphere.setVisible(false);
@@ -1220,6 +1347,7 @@ class FloatingSphere {
     water.material.uniforms['oceanWaveFrequency'].value = oceanWaveFrequency;
     water.material.uniforms['oceanWaveSpeed'].value = oceanWaveSpeed;
     water.material.uniforms['oceanWaveSharpness'].value = oceanWaveSharpness;
+    water.material.uniforms['fftWavesEnabled'].value = fftWavesEnabled;
   }
 
   function applyOceanWaveControlValues() {
@@ -1237,6 +1365,11 @@ class FloatingSphere {
   bindNumberInput(waveFrequencySlider, waveFrequencyValue);
   bindNumberInput(waveSpeedSlider, waveSpeedValue);
   bindNumberInput(waveSharpnessSlider, waveSharpnessValue);
+  bindNumberInput(generatorFrequencySlider, generatorFrequencyValue);
+  bindNumberInput(generatorStrengthSlider, generatorStrengthValue);
+  bindNumberInput(generatorWidthSlider, generatorWidthValue);
+  bindNumberInput(generatorRadiusSlider, generatorRadiusValue);
+  bindNumberInput(generatorZSlider, generatorZValue);
   bindNumberInput(wakeHeightSlider, wakeHeightValue);
   bindNumberInput(rippleLengthSlider, rippleLengthValue);
   bindNumberInput(reflectionStrengthSlider, reflectionStrengthValue);
@@ -1273,6 +1406,49 @@ class FloatingSphere {
     oceanWaveSharpness = setControlValue(waveSharpnessSlider, waveSharpnessValue, Number(waveSharpnessSlider.value));
     updateWaterWaveUniforms();
     cargoShip.requestFloatReset();
+  });
+
+  generatorFrequencySlider.addEventListener('input', () => {
+    primaryWaveEmitter.frequency = setControlValue(
+      generatorFrequencySlider,
+      generatorFrequencyValue,
+      Number(generatorFrequencySlider.value)
+    );
+    resetWaveEmitters();
+  });
+
+  generatorStrengthSlider.addEventListener('input', () => {
+    primaryWaveEmitter.strength = setControlValue(
+      generatorStrengthSlider,
+      generatorStrengthValue,
+      Number(generatorStrengthSlider.value)
+    );
+    primaryWaveEmitter.troughStrength = -primaryWaveEmitter.strength * 0.62;
+  });
+
+  generatorWidthSlider.addEventListener('input', () => {
+    primaryWaveEmitter.width = setControlValue(
+      generatorWidthSlider,
+      generatorWidthValue,
+      Number(generatorWidthSlider.value)
+    );
+  });
+
+  generatorRadiusSlider.addEventListener('input', () => {
+    primaryWaveEmitter.radius = setControlValue(
+      generatorRadiusSlider,
+      generatorRadiusValue,
+      Number(generatorRadiusSlider.value)
+    );
+    primaryWaveEmitter.troughOffset = primaryWaveEmitter.radius * 1.5;
+  });
+
+  generatorZSlider.addEventListener('input', () => {
+    primaryWaveEmitter.origin.z = setControlValue(
+      generatorZSlider,
+      generatorZValue,
+      Number(generatorZSlider.value)
+    );
   });
 
   wakeHeightSlider.addEventListener('input', () => {
@@ -1385,6 +1561,13 @@ class FloatingSphere {
     setShipMovementMode(shipMovementModeStopped);
   });
 
+  toggleFftWavesButton.addEventListener('click', () => {
+    fftWavesEnabled = fftWavesEnabled > 0 ? 0 : 1;
+    setToggleButtonState(toggleFftWavesButton, fftWavesEnabled > 0);
+    updateWaterWaveUniforms();
+    cargoShip.requestFloatReset();
+  });
+
   toggleObjectFoamButton.addEventListener('click', () => {
     objectFoamEnabled = objectFoamEnabled > 0 ? 0 : 1;
     setToggleButtonState(toggleObjectFoamButton, objectFoamEnabled > 0);
@@ -1412,6 +1595,18 @@ class FloatingSphere {
     if (water.material) {
       water.material.uniforms['extraFoamEnabled'].value = extraFoamEnabled;
     }
+  });
+
+  toggleWaveGeneratorButton.addEventListener('click', () => {
+    waveGeneratorEnabled = !waveGeneratorEnabled;
+    resetWaveEmitters();
+    setToggleButtonState(toggleWaveGeneratorButton, waveGeneratorEnabled);
+  });
+
+  toggleWallsButton.addEventListener('click', () => {
+    wallsEnabled = !wallsEnabled;
+    boundaryWalls.setVisible(wallsEnabled);
+    setToggleButtonState(toggleWallsButton, wallsEnabled);
   });
 
   toggleFoamTextureButton.addEventListener('click', () => {
@@ -1676,6 +1871,10 @@ class FloatingSphere {
   }
 
   function getOceanHeightAt(x, z, time) {
+    if (fftWavesEnabled > 0) {
+      return getSpectralOceanHeightAt(x, z, time);
+    }
+
     let height = 0;
 
     height += gerstnerHeight(x, z, 1, 0.24, 4.2, 0.85, 0.55, time);
@@ -1683,6 +1882,41 @@ class FloatingSphere {
     height += gerstnerHeight(x, z, -0.35, 1, 10.5, 1.85, 0.18, time);
     height += gerstnerHeight(x, z, 0.2, 1, 17, 2.65, 0.08, time);
     height += gerstnerHeight(x, z, -1, 0.15, 24, 3.4, 0.045, time);
+
+    return height * oceanWaveStrength;
+  }
+
+  function spectralHeight(pointX, pointZ, directionX, directionZ, frequency, speed, amplitude, phase, time) {
+    const length = Math.sqrt(directionX * directionX + directionZ * directionZ);
+    const normalizedX = directionX / length;
+    const normalizedZ = directionZ / length;
+    const angle =
+      (pointX * normalizedX + pointZ * normalizedZ) * frequency * oceanWaveFrequency +
+      time * speed * oceanWaveSpeed +
+      phase;
+
+    return Math.sin(angle) * amplitude;
+  }
+
+  function getSpectralOceanHeightAt(x, z, time) {
+    let height = 0;
+
+    height += spectralHeight(x, z, 1.00, 0.18, 2.60, 0.56, 0.42, 0.30, time);
+    height += spectralHeight(x, z, 0.92, 0.38, 3.70, 0.72, 0.32, 2.10, time);
+    height += spectralHeight(x, z, 0.72, 0.70, 5.20, 0.96, 0.24, 4.50, time);
+    height += spectralHeight(x, z, 0.36, 0.94, 6.80, 1.15, 0.18, 1.40, time);
+    height += spectralHeight(x, z, -0.10, 1.00, 8.60, 1.42, 0.14, 5.30, time);
+    height += spectralHeight(x, z, -0.42, 0.91, 10.80, 1.68, 0.105, 0.80, time);
+    height += spectralHeight(x, z, 0.58, -0.82, 12.60, 1.94, 0.080, 3.70, time);
+    height += spectralHeight(x, z, -0.74, 0.66, 15.20, 2.22, 0.060, 2.80, time);
+    height += spectralHeight(x, z, 0.98, -0.22, 18.50, 2.55, 0.045, 5.90, time);
+    height += spectralHeight(x, z, -0.88, -0.48, 21.00, 2.88, 0.034, 1.90, time);
+    height += spectralHeight(x, z, 0.18, 0.98, 24.80, 3.25, 0.026, 4.10, time);
+    height += spectralHeight(x, z, -0.26, 0.96, 29.50, 3.68, 0.020, 0.55, time);
+    height += spectralHeight(x, z, 0.64, 0.77, 34.00, 4.05, 0.016, 3.20, time);
+    height += spectralHeight(x, z, -0.56, 0.83, 40.00, 4.52, 0.012, 5.05, time);
+    height += spectralHeight(x, z, 0.86, 0.50, 48.00, 5.10, 0.009, 2.45, time);
+    height += spectralHeight(x, z, -0.98, 0.18, 56.00, 5.75, 0.007, 4.85, time);
 
     return height * oceanWaveStrength;
   }
@@ -1724,6 +1958,8 @@ class FloatingSphere {
 
     updateAutonomousShip(time);
 
+    updateWaterBounceRects();
+    updateWaveEmitters(time);
     waterSimulation.stepSimulation(renderer);
     waterSimulation.updateNormals(renderer);
 
@@ -1747,6 +1983,7 @@ class FloatingSphere {
     renderer.clear();
 
     pool.draw(renderer, waterTexture, causticsTexture);
+    boundaryWalls.draw(renderer);
     floatingSphere.draw(renderer);
     waterVolume.draw(renderer);
     water.draw(renderer, waterTexture, causticsTexture, time);
@@ -1755,17 +1992,100 @@ class FloatingSphere {
   }
 
   function clampPoolCoordinate(value) {
-    return Math.min(0.98, Math.max(-0.98, value));
+    return Math.min(waterExtent * 0.98, Math.max(-waterExtent * 0.98, value));
   }
 
   function addWakeDrop(x, z, radius, strength) {
     waterSimulation.addDrop(
       renderer,
-      clampPoolCoordinate(x),
-      clampPoolCoordinate(z),
-      radius,
+      clampPoolCoordinate(x) / waterExtent,
+      clampPoolCoordinate(z) / waterExtent,
+      radius / waterExtent,
       strength * objectWakeHeightScale
     );
+  }
+
+  function resetWaveEmitters() {
+    for (const emitter of waveEmitters) {
+      emitter.nextEmitTime = null;
+    }
+  }
+
+  function normalizeDirection(direction) {
+    const length = Math.sqrt(direction.x * direction.x + direction.z * direction.z);
+
+    if (length < 0.0001) {
+      return { x: 0, z: 1 };
+    }
+
+    return {
+      x: direction.x / length,
+      z: direction.z / length,
+    };
+  }
+
+  function updateWaveEmitters(time) {
+    if (!waveGeneratorEnabled) {
+      resetWaveEmitters();
+      return;
+    }
+
+    for (const emitter of waveEmitters) {
+      if (!emitter.enabled) continue;
+
+      if (emitter.type === waveEmitterTypeLine) {
+        updateLineWaveEmitter(emitter, time);
+      } else if (emitter.type === waveEmitterTypePoint) {
+        updatePointWaveEmitter(emitter, time);
+      }
+    }
+  }
+
+  function shouldEmitWave(emitter, time) {
+    const interval = 1 / Math.max(0.001, emitter.frequency);
+
+    if (emitter.nextEmitTime === null) {
+      emitter.nextEmitTime = time;
+    }
+
+    if (time < emitter.nextEmitTime) {
+      return false;
+    }
+
+    emitter.nextEmitTime += interval;
+    return true;
+  }
+
+  function updateLineWaveEmitter(emitter, time) {
+    if (!shouldEmitWave(emitter, time)) return;
+
+    const direction = normalizeDirection(emitter.direction);
+    const side = { x: -direction.z, z: direction.x };
+    const samples = Math.max(2, emitter.samples);
+    const troughOffset = emitter.troughOffset || emitter.radius * 1.5;
+
+    for (let i = 0; i < samples; i++) {
+      const t = samples === 1 ? 0.5 : i / (samples - 1);
+      const sideOffset = (t - 0.5) * emitter.width;
+      const edgeFade = Math.sin(t * Math.PI);
+      const fade = 0.35 + edgeFade * 0.65;
+      const x = emitter.origin.x + side.x * sideOffset;
+      const z = emitter.origin.z + side.z * sideOffset;
+
+      addWakeDrop(x, z, emitter.radius, emitter.strength * fade);
+      addWakeDrop(
+        x - direction.x * troughOffset,
+        z - direction.z * troughOffset,
+        emitter.radius * 1.2,
+        emitter.troughStrength * fade
+      );
+    }
+  }
+
+  function updatePointWaveEmitter(emitter, time) {
+    if (!shouldEmitWave(emitter, time)) return;
+
+    addWakeDrop(emitter.origin.x, emitter.origin.z, emitter.radius, emitter.strength);
   }
 
   function addSphereWake(fromPoint, toPoint, directionX, directionZ, perpendicularX, perpendicularZ, speed) {
@@ -2123,6 +2443,11 @@ class FloatingSphere {
     setControlValue(waveFrequencySlider, waveFrequencyValue, oceanWaveFrequency);
     setControlValue(waveSpeedSlider, waveSpeedValue, oceanWaveSpeed);
     setControlValue(waveSharpnessSlider, waveSharpnessValue, oceanWaveSharpness);
+    setControlValue(generatorFrequencySlider, generatorFrequencyValue, primaryWaveEmitter.frequency);
+    setControlValue(generatorStrengthSlider, generatorStrengthValue, primaryWaveEmitter.strength);
+    setControlValue(generatorWidthSlider, generatorWidthValue, primaryWaveEmitter.width);
+    setControlValue(generatorRadiusSlider, generatorRadiusValue, primaryWaveEmitter.radius);
+    setControlValue(generatorZSlider, generatorZValue, primaryWaveEmitter.origin.z);
     setControlValue(wakeHeightSlider, wakeHeightValue, objectWakeHeightScale);
     setControlValue(rippleLengthSlider, rippleLengthValue, rippleDistance);
     setControlValue(reflectionStrengthSlider, reflectionStrengthValue, reflectionStrength);
@@ -2130,6 +2455,9 @@ class FloatingSphere {
     setToggleButtonState(toggleSphereButton, floatingSphere.visible);
     setToggleButtonState(toggleShipButton, cargoShip.visible);
     updateShipMovementModeButtons();
+    setToggleButtonState(toggleFftWavesButton, fftWavesEnabled > 0);
+    setToggleButtonState(toggleWaveGeneratorButton, waveGeneratorEnabled);
+    setToggleButtonState(toggleWallsButton, wallsEnabled);
     setToggleButtonState(toggleObjectFoamButton, objectFoamEnabled > 0);
     setToggleButtonState(toggleWaveFoamButton, waveFoamEnabled > 0);
     setToggleButtonState(toggleExtraFoamButton, extraFoamEnabled > 0);
