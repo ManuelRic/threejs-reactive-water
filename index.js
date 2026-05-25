@@ -1,4 +1,7 @@
 const canvas = document.getElementById('canvas');
+const controlsToggleButton = document.getElementById('controls-toggle');
+const controlsCloseButton = document.getElementById('controls-close');
+const controlsBackdropButton = document.getElementById('controls-backdrop');
 const buoyancySlider = document.getElementById('buoyancy');
 const buoyancyValue = document.getElementById('buoyancy-value');
 const shipBuoyancySlider = document.getElementById('ship-buoyancy');
@@ -19,6 +22,12 @@ const reflectionStrengthSlider = document.getElementById('reflection-strength');
 const reflectionStrengthValue = document.getElementById('reflection-strength-value');
 const waterOpacitySlider = document.getElementById('water-opacity');
 const waterOpacityValue = document.getElementById('water-opacity-value');
+const shadowStrengthSlider = document.getElementById('shadow-strength');
+const shadowStrengthValue = document.getElementById('shadow-strength-value');
+const waterTextureOpacitySlider = document.getElementById('water-texture-opacity');
+const waterTextureOpacityValue = document.getElementById('water-texture-opacity-value');
+const waterTextureFrequencySlider = document.getElementById('water-texture-frequency');
+const waterTextureFrequencyValue = document.getElementById('water-texture-frequency-value');
 const toggleSphereButton = document.getElementById('toggle-sphere');
 const toggleShipButton = document.getElementById('toggle-ship');
 const shipModeRandomButton = document.getElementById('ship-mode-random');
@@ -44,16 +53,18 @@ const toggleFoamTextureButton = document.getElementById('toggle-foam-texture');
 const toggleWaterTextureButton = document.getElementById('toggle-water-texture');
 const toggleWireframeButton = document.getElementById('toggle-wireframe');
 
-const width = canvas.width;
-const height = canvas.height;
 const waterExtent = 2.5;
 const wallExtent = 2.0;
+const vesselMovementBounds = wallExtent - 0.25;
 const maxWaterBounceObjects = 16;
 
 // Lower values make wake waves fade sooner. Higher values let them travel farther.
 let rippleDistance = Number(rippleLengthSlider.value);
 let reflectionStrength = Number(reflectionStrengthSlider.value);
 let waterOpacity = Number(waterOpacitySlider.value);
+let shadowStrength = Number(shadowStrengthSlider.value);
+let waterTextureOpacity = Number(waterTextureOpacitySlider.value);
+let waterTextureFrequency = Number(waterTextureFrequencySlider.value);
 const wakeHeightRecovery = 0.992;
 const maxWakeHeight = 5;
 let oceanWaveStrength = Number(waveAmplitudeSlider.value);
@@ -77,8 +88,8 @@ let waterImageTextureEnabled = 1;
 let waterTextureEnabled = 1;
 let wireframeEnabled = false;
 let fftWavesEnabled = 1;
-let waveGeneratorEnabled = true;
-let wallsEnabled = true;
+let waveGeneratorEnabled = false;
+let wallsEnabled = false;
 const extraFoamRippleBoost = 0;
 const wakeDropCount = 5;
 const wakeTrailSpacing = 0.055;
@@ -128,7 +139,7 @@ const shipMovementYawOffset = Math.PI / 2;
 const shipAutopilotSpeed = 0.18;
 const shipAutopilotTurnBiasMax = 0.45;
 const shipAutopilotTargetRadius = 0.12;
-const shipAutopilotBounds = 2.0;
+const shipAutopilotBounds = vesselMovementBounds;
 const shipAutopilotTurnChangeMinTime = 1.8;
 const shipAutopilotTurnChangeMaxTime = 3.8;
 const shipAutopilotTurnSmoothness = 1.6;
@@ -137,7 +148,7 @@ const shipMovementModeRandom = 'random';
 const shipMovementModeCircle = 'circle';
 const shipMovementModeStopped = 'stopped';
 const shipCircleCenter = { x: 0, z: 0 };
-const shipCircleRadius = 1.35;
+const shipCircleRadius = Math.min(1.35, vesselMovementBounds * 0.78);
 const shipCircleAngularSpeed = shipAutopilotSpeed / shipCircleRadius;
 const shipYawSmoothness = 5.2;
 const shipWaveTiltStart = 0.055;
@@ -157,6 +168,29 @@ const maxSimulationDelta = 1 / 30;
 const black = new THREE.Color('black');
 const white = new THREE.Color('white');
 
+function setControlsOpen(isOpen) {
+  document.body.classList.toggle('controls-open', isOpen);
+  controlsToggleButton.setAttribute('aria-expanded', String(isOpen));
+}
+
+controlsToggleButton.addEventListener('click', () => {
+  setControlsOpen(!document.body.classList.contains('controls-open'));
+});
+
+controlsCloseButton.addEventListener('click', () => {
+  setControlsOpen(false);
+});
+
+controlsBackdropButton.addEventListener('click', () => {
+  setControlsOpen(false);
+});
+
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') {
+    setControlsOpen(false);
+  }
+});
+
 function loadFile(filename) {
   return new Promise((resolve, reject) => {
     const loader = new THREE.FileLoader();
@@ -172,7 +206,9 @@ loadFile('shaders/utils.glsl').then((utils) => {
   THREE.ShaderChunk['utils'] = utils;
 
   // Create Renderer
-  const camera = new THREE.PerspectiveCamera(45, width / height, 0.01, 100);
+  const initialCanvasWidth = Math.max(1, canvas.clientWidth || window.innerWidth);
+  const initialCanvasHeight = Math.max(1, canvas.clientHeight || window.innerHeight);
+  const camera = new THREE.PerspectiveCamera(45, initialCanvasWidth / initialCanvasHeight, 0.01, 100);
   const cameraTarget = new THREE.Vector3(0, -0.12, 0);
   const cameraOffset = new THREE.Vector3();
   const cameraSpherical = new THREE.Spherical();
@@ -190,8 +226,28 @@ loadFile('shaders/utils.glsl').then((utils) => {
   }
 
   const renderer = new THREE.WebGLRenderer({canvas: canvas, antialias: true, alpha: true});
-  renderer.setSize(width, height);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.setSize(initialCanvasWidth, initialCanvasHeight, false);
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.autoClear = false;
+
+  function resizeRendererToCanvas() {
+    const displayWidth = Math.max(1, canvas.clientWidth);
+    const displayHeight = Math.max(1, canvas.clientHeight);
+    const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+    const renderWidth = Math.floor(displayWidth * pixelRatio);
+    const renderHeight = Math.floor(displayHeight * pixelRatio);
+
+    if (canvas.width === renderWidth && canvas.height === renderHeight) return;
+
+    renderer.setPixelRatio(pixelRatio);
+    renderer.setSize(displayWidth, displayHeight, false);
+    camera.aspect = displayWidth / displayHeight;
+    camera.updateProjectionMatrix();
+    reflectionCamera.aspect = camera.aspect;
+    reflectionCamera.updateProjectionMatrix();
+  }
 
   const reflectionCamera = new THREE.PerspectiveCamera(camera.fov, camera.aspect, camera.near, camera.far);
   const reflectionTarget = new THREE.WebGLRenderTarget(1024, 1024, {
@@ -257,6 +313,15 @@ loadFile('shaders/utils.glsl').then((utils) => {
   const objectAmbient = new THREE.AmbientLight(0xffffff, 0.3);
   const objectLight = new THREE.DirectionalLight(0xffffff, 0.6);
   objectLight.position.set(light[0], light[1], light[2]);
+  objectLight.castShadow = true;
+  objectLight.shadow.mapSize.set(1024, 1024);
+  objectLight.shadow.camera.left = -3;
+  objectLight.shadow.camera.right = 3;
+  objectLight.shadow.camera.top = 3;
+  objectLight.shadow.camera.bottom = -3;
+  objectLight.shadow.camera.near = 0.1;
+  objectLight.shadow.camera.far = 6;
+  objectLight.shadow.bias = -0.0004;
   objectScene.add(objectAmbient);
   objectScene.add(objectLight);
 
@@ -486,6 +551,8 @@ loadFile('shaders/utils.glsl').then((utils) => {
               reflectionTextureMatrix: { value: reflectionTextureMatrix },
               reflectionStrength: { value: reflectionStrength },
               waterOpacity: { value: waterOpacity },
+              waterTextureOpacity: { value: waterTextureOpacity },
+              waterTextureFrequency: { value: waterTextureFrequency },
               time: { value: 0 },
               oceanWaveStrength: { value: oceanWaveStrength },
               oceanWaveFrequency: { value: oceanWaveFrequency },
@@ -690,6 +757,11 @@ loadFile('shaders/utils.glsl').then((utils) => {
       const westWall = new THREE.Mesh(sideWallGeometry, material);
       westWall.position.set(-wallExtent - wallThickness * 0.5, wallY, 0);
 
+      [northWall, southWall, eastWall, westWall].forEach((wall) => {
+        wall.castShadow = true;
+        wall.receiveShadow = true;
+      });
+
       this.group.add(northWall, southWall, eastWall, westWall);
       objectScene.add(this.group);
       registerWaterBounceObject(northWall);
@@ -704,6 +776,33 @@ loadFile('shaders/utils.glsl').then((utils) => {
 
     setVisible(visible) {
       this.group.visible = visible;
+      this.group.traverse((child) => {
+        child.visible = visible;
+      });
+    }
+
+  }
+
+  class FloorShadowReceiver {
+
+    constructor() {
+      const geometry = new THREE.PlaneBufferGeometry(waterExtent * 2, waterExtent * 2);
+      const material = new THREE.ShadowMaterial({
+        color: 0x061016,
+        opacity: shadowStrength,
+        transparent: true,
+        depthWrite: false,
+      });
+
+      this.mesh = new THREE.Mesh(geometry, material);
+      this.mesh.rotation.x = -Math.PI / 2;
+      this.mesh.position.y = -0.998;
+      this.mesh.receiveShadow = true;
+      objectScene.add(this.mesh);
+    }
+
+    setStrength(value) {
+      this.mesh.material.opacity = value;
     }
 
   }
@@ -754,6 +853,8 @@ class FloatingSphere {
       };
 
       this.mesh = new THREE.Mesh(geometry, material);
+      this.mesh.castShadow = true;
+      this.mesh.receiveShadow = true;
       this.mesh.position.set(-0.5, this.radius * 0.25, 0.3);
       objectScene.add(this.mesh);
 
@@ -793,8 +894,8 @@ class FloatingSphere {
     }
 
     clampToPool() {
-      this.mesh.position.x = Math.min(0.95, Math.max(-0.95, this.mesh.position.x));
-      this.mesh.position.z = Math.min(0.95, Math.max(-0.95, this.mesh.position.z));
+      this.mesh.position.x = Math.min(vesselMovementBounds, Math.max(-vesselMovementBounds, this.mesh.position.x));
+      this.mesh.position.z = Math.min(vesselMovementBounds, Math.max(-vesselMovementBounds, this.mesh.position.z));
       this.mesh.updateMatrixWorld();
     }
 
@@ -1179,8 +1280,8 @@ class FloatingSphere {
     }
 
     clampToPool() {
-      this.group.position.x = Math.min(0.9, Math.max(-0.9, this.group.position.x));
-      this.group.position.z = Math.min(0.9, Math.max(-0.9, this.group.position.z));
+      this.group.position.x = Math.min(vesselMovementBounds, Math.max(-vesselMovementBounds, this.group.position.x));
+      this.group.position.z = Math.min(vesselMovementBounds, Math.max(-vesselMovementBounds, this.group.position.z));
       this.group.updateMatrixWorld();
     }
 
@@ -1285,10 +1386,12 @@ class FloatingSphere {
   const water = new Water();
   const caustics = new Caustics(water.geometry);
   const pool = new Pool();
+  const floorShadowReceiver = new FloorShadowReceiver();
   const waterVolume = new WaterVolume();
   const boundaryWalls = new BoundaryWalls();
   const floatingSphere = new FloatingSphere();
   const cargoShip = new CargoShip();
+  boundaryWalls.setVisible(wallsEnabled);
   floatingSphere.setVisible(false);
   let lastWakePoint = null;
   let shipMovementMode = shipMovementModeRandom;
@@ -1374,6 +1477,9 @@ class FloatingSphere {
   bindNumberInput(rippleLengthSlider, rippleLengthValue);
   bindNumberInput(reflectionStrengthSlider, reflectionStrengthValue);
   bindNumberInput(waterOpacitySlider, waterOpacityValue);
+  bindNumberInput(shadowStrengthSlider, shadowStrengthValue);
+  bindNumberInput(waterTextureOpacitySlider, waterTextureOpacityValue);
+  bindNumberInput(waterTextureFrequencySlider, waterTextureFrequencyValue);
 
   buoyancySlider.addEventListener('input', () => {
     const value = setControlValue(buoyancySlider, buoyancyValue, Number(buoyancySlider.value));
@@ -1472,6 +1578,39 @@ class FloatingSphere {
 
     if (water.material) {
       water.material.uniforms['waterOpacity'].value = waterOpacity;
+    }
+  });
+
+  shadowStrengthSlider.addEventListener('input', () => {
+    shadowStrength = setControlValue(
+      shadowStrengthSlider,
+      shadowStrengthValue,
+      Number(shadowStrengthSlider.value)
+    );
+    floorShadowReceiver.setStrength(shadowStrength);
+  });
+
+  waterTextureOpacitySlider.addEventListener('input', () => {
+    waterTextureOpacity = setControlValue(
+      waterTextureOpacitySlider,
+      waterTextureOpacityValue,
+      Number(waterTextureOpacitySlider.value)
+    );
+
+    if (water.material) {
+      water.material.uniforms['waterTextureOpacity'].value = waterTextureOpacity;
+    }
+  });
+
+  waterTextureFrequencySlider.addEventListener('input', () => {
+    waterTextureFrequency = setControlValue(
+      waterTextureFrequencySlider,
+      waterTextureFrequencyValue,
+      Number(waterTextureFrequencySlider.value)
+    );
+
+    if (water.material) {
+      water.material.uniforms['waterTextureFrequency'].value = waterTextureFrequency;
     }
   });
 
@@ -1949,6 +2088,8 @@ class FloatingSphere {
 
   // Main rendering loop
   function animate() {
+    resizeRendererToCanvas();
+
     const now = performance.now() * 0.001;
     const realDelta = previousFrameTime === null ? 0 : Math.max(0, now - previousFrameTime);
     const deltaTime = Math.min(realDelta, maxSimulationDelta);
@@ -2452,6 +2593,9 @@ class FloatingSphere {
     setControlValue(rippleLengthSlider, rippleLengthValue, rippleDistance);
     setControlValue(reflectionStrengthSlider, reflectionStrengthValue, reflectionStrength);
     setControlValue(waterOpacitySlider, waterOpacityValue, waterOpacity);
+    setControlValue(shadowStrengthSlider, shadowStrengthValue, shadowStrength);
+    setControlValue(waterTextureOpacitySlider, waterTextureOpacityValue, waterTextureOpacity);
+    setControlValue(waterTextureFrequencySlider, waterTextureFrequencyValue, waterTextureFrequency);
     setToggleButtonState(toggleSphereButton, floatingSphere.visible);
     setToggleButtonState(toggleShipButton, cargoShip.visible);
     updateShipMovementModeButtons();
@@ -2472,6 +2616,7 @@ class FloatingSphere {
     canvas.addEventListener('wheel', { handleEvent: onWheel }, { passive: false });
     window.addEventListener('mouseup', { handleEvent: onMouseUp });
     canvas.addEventListener('contextmenu', { handleEvent: onContextMenu });
+    window.addEventListener('resize', resizeRendererToCanvas);
     window.addEventListener('blur', resetFrameClock);
     window.addEventListener('focus', onPageFocusChange);
     document.addEventListener('visibilitychange', onPageFocusChange);

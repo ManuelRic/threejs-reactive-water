@@ -11,29 +11,49 @@
     <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/three@0.113.0/examples/js/loaders/GLTFLoader.js"></script>
   </head>
 
-  <body>
+  <body class="controls-open">
     <main class="app-shell">
       <section class="viewport">
         <canvas id="canvas" height="600" width="800"></canvas>
       </section>
 
-      <section class="controls-panel" aria-label="Simulation controls">
+      <button id="controls-toggle" class="controls-toggle" type="button" aria-controls="controls-panel" aria-expanded="true" aria-label="Toggle controls">
+        <span class="controls-toggle-line"></span>
+        <span class="controls-toggle-line"></span>
+        <span class="controls-toggle-line"></span>
+      </button>
+      <button id="controls-backdrop" class="controls-backdrop" type="button" aria-label="Close controls"></button>
+
+      <section id="controls-panel" class="controls-panel" aria-label="Simulation controls">
+        <div class="controls-panel-header">
+          <div>
+            <p>Water lab</p>
+            <h1>Simulation controls</h1>
+          </div>
+          <button id="controls-close" class="controls-close" type="button" aria-label="Close controls">&times;</button>
+        </div>
+
         <div class="control-group control-group-objects">
           <div class="control-group-header">
-            <h2>Objects</h2>
+            <h2>Scene objects</h2>
           </div>
           <div class="button-row">
             <button id="toggle-sphere" class="button is-small is-info" type="button">Sphere</button>
             <button id="toggle-ship" class="button is-small is-info" type="button">Ship</button>
+            <button id="toggle-walls" class="button is-small is-light" type="button">Walls</button>
+          </div>
+        </div>
+
+        <div class="control-group">
+          <div class="control-group-header">
+            <h2>Ship motion</h2>
+          </div>
+          <div class="button-row">
             <button id="ship-mode-random" class="button is-small is-info" type="button">Random</button>
             <button id="ship-mode-circle" class="button is-small is-light" type="button">Circle</button>
             <button id="ship-mode-stopped" class="button is-small is-light" type="button">Stopped</button>
           </div>
           <div class="control-grid">
-            <div class="range-control">
-              <label for="buoyancy"><span>Sphere buoyancy</span><input id="buoyancy-value" class="value-input" type="number" min="0" max="2" step="0.01" value="1.00"></label>
-              <input id="buoyancy" class="slider is-fullwidth" type="range" min="0" max="2" step="0.01" value="1">
-            </div>
             <div class="range-control">
               <label for="ship-buoyancy"><span>Ship buoyancy</span><input id="ship-buoyancy-value" class="value-input" type="number" min="0" max="2" step="0.01" value="1.00"></label>
               <input id="ship-buoyancy" class="slider is-fullwidth" type="range" min="0" max="2" step="0.01" value="1">
@@ -43,7 +63,22 @@
 
         <div class="control-group">
           <div class="control-group-header">
-            <h2>Ocean</h2>
+            <h2>Sphere physics</h2>
+          </div>
+          <div class="control-grid">
+            <div class="range-control">
+              <label for="buoyancy"><span>Sphere buoyancy</span><input id="buoyancy-value" class="value-input" type="number" min="0" max="2" step="0.01" value="1.00"></label>
+              <input id="buoyancy" class="slider is-fullwidth" type="range" min="0" max="2" step="0.01" value="1">
+            </div>
+          </div>
+        </div>
+
+        <div class="control-group">
+          <div class="control-group-header">
+            <h2>Water motion</h2>
+          </div>
+          <div class="button-row">
+            <button id="toggle-fft-waves" class="button is-small is-info" type="button">FFT waves</button>
           </div>
           <div class="control-grid">
             <div class="range-control">
@@ -63,30 +98,34 @@
               <input id="wave-sharpness" class="slider is-fullwidth" type="range" min="0" max="2.5" step="0.01" value="1">
             </div>
           </div>
+        </div>
+
+        <div class="control-group">
+          <div class="control-group-header">
+            <h2>Wave generator</h2>
+          </div>
           <div class="button-row">
-            <button id="toggle-fft-waves" class="button is-small is-info" type="button">FFT waves</button>
-            <button id="toggle-wave-generator" class="button is-small is-info" type="button">Wave generator</button>
-            <button id="toggle-walls" class="button is-small is-info" type="button">Walls</button>
+            <button id="toggle-wave-generator" class="button is-small is-light" type="button">Wave generator</button>
           </div>
           <div class="control-grid">
             <div class="range-control">
-              <label for="generator-frequency"><span>Generator frequency</span><input id="generator-frequency-value" class="value-input" type="number" min="0.1" max="4" step="0.01" value="1.15"></label>
+              <label for="generator-frequency"><span>Frequency</span><input id="generator-frequency-value" class="value-input" type="number" min="0.1" max="4" step="0.01" value="1.15"></label>
               <input id="generator-frequency" class="slider is-fullwidth" type="range" min="0.1" max="4" step="0.01" value="1.15">
             </div>
             <div class="range-control">
-              <label for="generator-strength"><span>Generator strength</span><input id="generator-strength-value" class="value-input" type="number" min="0" max="0.08" step="0.001" value="0.026"></label>
+              <label for="generator-strength"><span>Strength</span><input id="generator-strength-value" class="value-input" type="number" min="0" max="0.08" step="0.001" value="0.026"></label>
               <input id="generator-strength" class="slider is-fullwidth" type="range" min="0" max="0.08" step="0.001" value="0.026">
             </div>
             <div class="range-control">
-              <label for="generator-width"><span>Generator width</span><input id="generator-width-value" class="value-input" type="number" min="0.4" max="4" step="0.01" value="3.20"></label>
+              <label for="generator-width"><span>Width</span><input id="generator-width-value" class="value-input" type="number" min="0.4" max="4" step="0.01" value="3.20"></label>
               <input id="generator-width" class="slider is-fullwidth" type="range" min="0.4" max="4" step="0.01" value="3.2">
             </div>
             <div class="range-control">
-              <label for="generator-radius"><span>Generator radius</span><input id="generator-radius-value" class="value-input" type="number" min="0.02" max="0.3" step="0.001" value="0.120"></label>
+              <label for="generator-radius"><span>Radius</span><input id="generator-radius-value" class="value-input" type="number" min="0.02" max="0.3" step="0.001" value="0.120"></label>
               <input id="generator-radius" class="slider is-fullwidth" type="range" min="0.02" max="0.3" step="0.001" value="0.12">
             </div>
             <div class="range-control">
-              <label for="generator-z"><span>Generator Z</span><input id="generator-z-value" class="value-input" type="number" min="-2" max="2" step="0.01" value="-1.65"></label>
+              <label for="generator-z"><span>Z position</span><input id="generator-z-value" class="value-input" type="number" min="-2" max="2" step="0.01" value="-1.65"></label>
               <input id="generator-z" class="slider is-fullwidth" type="range" min="-2" max="2" step="0.01" value="-1.65">
             </div>
           </div>
@@ -126,6 +165,18 @@
             <div class="range-control">
               <label for="water-opacity"><span>Water opacity</span><input id="water-opacity-value" class="value-input" type="number" min="0.05" max="1" step="0.01" value="0.55"></label>
               <input id="water-opacity" class="slider is-fullwidth" type="range" min="0.05" max="1" step="0.01" value="0.55">
+            </div>
+            <div class="range-control">
+              <label for="shadow-strength"><span>Shadow strength</span><input id="shadow-strength-value" class="value-input" type="number" min="0" max="0.8" step="0.01" value="0.24"></label>
+              <input id="shadow-strength" class="slider is-fullwidth" type="range" min="0" max="0.8" step="0.01" value="0.24">
+            </div>
+            <div class="range-control">
+              <label for="water-texture-opacity"><span>Texture opacity</span><input id="water-texture-opacity-value" class="value-input" type="number" min="0" max="1" step="0.01" value="0.34"></label>
+              <input id="water-texture-opacity" class="slider is-fullwidth" type="range" min="0" max="1" step="0.01" value="0.34">
+            </div>
+            <div class="range-control">
+              <label for="water-texture-frequency"><span>Texture frequency</span><input id="water-texture-frequency-value" class="value-input" type="number" min="0.2" max="8" step="0.01" value="2.70"></label>
+              <input id="water-texture-frequency" class="slider is-fullwidth" type="range" min="0.2" max="8" step="0.01" value="2.7">
             </div>
           </div>
           <div class="button-row">

@@ -18,6 +18,8 @@ uniform float waterTextureEnabled;
 uniform float waterImageTextureEnabled;
 uniform float waterExtent;
 uniform float waterOpacity;
+uniform float waterTextureOpacity;
+uniform float waterTextureFrequency;
 uniform float foamHeightThreshold;
 uniform float foamHeightSoftness;
 uniform float foamFromHeightStrength;
@@ -319,13 +321,13 @@ void main() {
   vec2 mottleNormal = vec2(waterPattern - 0.5, waterFinePattern - 0.5) * 0.11 * waterMottleEnabled;
   normal = normalize(normal + vec3(mottleNormal.x, 0.0, mottleNormal.y));
   float waterMottle = mix(1.0, mix(0.88, 1.08, waterPattern), waterMottleEnabled);
-  float waterImageScale = 2.7;
+  float waterImageScale = waterTextureFrequency;
   vec2 waterImageCoord = waterUv * waterImageScale + waterTextureScroll(waterImageScale) + waterTextureFlow(pos.xz);
   waterImageCoord += info.ba * 0.48 * waterTextureEnabled;
   waterImageCoord += vec2(heightSlope + oceanSlope, oceanSlope - heightSlope) * 0.18;
   vec3 waterImageColor = texture2D(waterImageTexture, waterImageCoord).rgb;
   vec3 waterTextureColor = mix(vec3(0.02, 0.22, 0.34), waterImageColor * vec3(0.7, 1.05, 1.25), 0.75);
-  float waterImageBlend = waterImageTextureEnabled * (1.0 - foam * 0.45);
+  float waterImageBlend = waterImageTextureEnabled * waterTextureOpacity * (1.0 - foam * 0.45);
   vec3 incomingRay = normalize(pos - eye);
 
   if (underwater == 1.) {
@@ -338,7 +340,7 @@ void main() {
     vec3 refractedColor = getSurfaceRayColor(pos, refractedRay, vec3(1.0)) * vec3(0.8, 1.0, 1.1);
     vec3 finalColor = mix(reflectedColor, refractedColor, (1.0 - fresnel) * length(refractedRay));
     finalColor *= waterMottle;
-    finalColor = mix(finalColor, finalColor * waterTextureColor * 2.35, waterImageBlend * 0.32);
+    finalColor = mix(finalColor, finalColor * waterTextureColor * 2.35, waterImageBlend);
     finalColor = mix(finalColor, vec3(0.82, 0.92, 0.96), foam * 0.32);
 
     gl_FragColor = vec4(finalColor, waterOpacity);
@@ -353,7 +355,7 @@ void main() {
     vec3 visibleWaterColor = mix(refractedColor, opaqueWaterColor, waterOpacity);
     vec3 finalColor = mix(visibleWaterColor, reflectedColor, fresnel);
     finalColor *= waterMottle;
-    finalColor = mix(finalColor, waterTextureColor, waterImageBlend * 0.34);
+    finalColor = mix(finalColor, waterTextureColor, waterImageBlend);
     vec2 reflectionDistortion = normal.xz * 0.045 + info.ba * 0.055 * waterTextureEnabled;
     vec4 planarReflection = getPlanarReflection(reflectionCoord, reflectionDistortion);
     float objectReflection = planarReflection.a * fresnel * reflectionStrength * (1.0 - foam * 0.65);
