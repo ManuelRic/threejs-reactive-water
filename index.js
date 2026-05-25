@@ -167,6 +167,9 @@ const maxSimulationDelta = 1 / 30;
 // Colors
 const black = new THREE.Color('black');
 const white = new THREE.Color('white');
+const causticObjectShaders = [];
+let currentObjectWaterTexture = null;
+let currentObjectCausticsTexture = null;
 
 function setControlsOpen(isOpen) {
   document.body.classList.toggle('controls-open', isOpen);
@@ -324,6 +327,80 @@ loadFile('shaders/utils.glsl').then((utils) => {
   objectLight.shadow.bias = -0.0004;
   objectScene.add(objectAmbient);
   objectScene.add(objectLight);
+
+  function addUnderwaterCaustics(material, options = {}) {
+    if (!material) return;
+
+    if (Array.isArray(material)) {
+      material.forEach((item) => addUnderwaterCaustics(item, options));
+      return;
+    }
+
+    if (material.userData.hasUnderwaterCaustics) return;
+
+    const previousBeforeCompile = material.onBeforeCompile;
+    material.userData.hasUnderwaterCaustics = true;
+    material.onBeforeCompile = (shader) => {
+      if (previousBeforeCompile) {
+        previousBeforeCompile(shader);
+      }
+
+      shader.uniforms.objectWaterTexture = { value: currentObjectWaterTexture };
+      shader.uniforms.objectCausticsTexture = { value: currentObjectCausticsTexture };
+      shader.uniforms.objectWaterExtent = { value: waterExtent };
+      shader.uniforms.objectCausticLight = { value: new THREE.Vector3(light[0], light[1], light[2]) };
+
+      shader.vertexShader = shader.vertexShader.replace(
+        '#include <common>',
+        '#include <common>\nvarying vec3 vObjectWorldPosition;'
+      );
+      shader.vertexShader = shader.vertexShader.replace(
+        '#include <begin_vertex>',
+        '#include <begin_vertex>\nvec4 objectWorldPosition = modelMatrix * vec4(transformed, 1.0);\nvObjectWorldPosition = objectWorldPosition.xyz;'
+      );
+      shader.fragmentShader = shader.fragmentShader.replace(
+        '#include <common>',
+        [
+          '#include <common>',
+          'uniform sampler2D objectWaterTexture;',
+          'uniform sampler2D objectCausticsTexture;',
+          'uniform float objectWaterExtent;',
+          'uniform vec3 objectCausticLight;',
+          'varying vec3 vObjectWorldPosition;',
+        ].join('\n')
+      );
+      shader.fragmentShader = shader.fragmentShader.replace(
+        '#include <color_fragment>',
+        [
+          '#include <color_fragment>',
+          'vec2 objectWaterUv = vObjectWorldPosition.xz / (objectWaterExtent * 2.0) + 0.5;',
+          'float objectWaterLevel = texture2D(objectWaterTexture, objectWaterUv).r;',
+          'float objectUnderwater = smoothstep(objectWaterLevel + 0.02, objectWaterLevel - 0.02, vObjectWorldPosition.y);',
+          'vec3 objectRefractedLight = -refract(-normalize(objectCausticLight), vec3(0.0, 1.0, 0.0), 1.0 / 1.333);',
+          'vec2 objectCausticsUv = 0.75 * (vObjectWorldPosition.xz - vObjectWorldPosition.y * objectRefractedLight.xz / objectRefractedLight.y) / (objectWaterExtent * 2.0) + 0.5;',
+          'vec4 objectCaustic = texture2D(objectCausticsTexture, objectCausticsUv);',
+          'float objectCausticStrength = objectCaustic.r * objectCaustic.g;',
+          'diffuseColor.rgb *= 1.0 + objectUnderwater * objectCausticStrength * 1.15;',
+          options.tintSubmerged
+            ? 'diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.03, 0.42, 0.62), objectUnderwater * 0.35);'
+            : '',
+        ].filter(Boolean).join('\n')
+      );
+
+      causticObjectShaders.push(shader);
+    };
+    material.needsUpdate = true;
+  }
+
+  function updateObjectCausticUniforms(waterTexture, causticsTexture) {
+    currentObjectWaterTexture = waterTexture;
+    currentObjectCausticsTexture = causticsTexture;
+
+    causticObjectShaders.forEach((shader) => {
+      shader.uniforms.objectWaterTexture.value = waterTexture;
+      shader.uniforms.objectCausticsTexture.value = causticsTexture;
+    });
+  }
 
   // Ray caster
   const raycaster = new THREE.Raycaster();
@@ -744,6 +821,7 @@ loadFile('shaders/utils.glsl').then((utils) => {
         shininess: 18,
         specular: 0x333333,
       });
+      addUnderwaterCaustics(material);
 
       const longWallGeometry = new THREE.BoxBufferGeometry(wallExtent * 2 + wallThickness * 2, wallHeight, wallThickness);
       const sideWallGeometry = new THREE.BoxBufferGeometry(wallThickness, wallHeight, wallExtent * 2);
@@ -817,7 +895,6 @@ class FloatingSphere {
       this.velocity = 0;
       this.waterLevel = 0;
       this.floorLevel = -1 + this.radius;
-      this.sphereShader = null;
 
       const geometry = new THREE.SphereBufferGeometry(this.radius, 48, 24);
       const material = new THREE.MeshPhongMaterial({
@@ -825,68 +902,18 @@ class FloatingSphere {
         shininess: 45,
         specular: 0x442211,
       });
-      material.onBeforeCompile = (shader) => {
-        shader.uniforms.waterLevel = { value: this.waterLevel };
-        this.sphereShader = shader;
-
-        shader.vertexShader = shader.vertexShader.replace(
-          '#include <common>',
-          '#include <common>\nvarying vec3 vWorldPosition;'
-        );
-        shader.vertexShader = shader.vertexShader.replace(
-          '#include <begin_vertex>',
-          '#include <begin_vertex>\nvec4 sphereWorldPosition = modelMatrix * vec4(transformed, 1.0);\nvWorldPosition = sphereWorldPosition.xyz;'
-        );
-        shader.fragmentShader = shader.fragmentShader.replace(
-          '#include <common>',
-          '#include <common>\nuniform float waterLevel;\nvarying vec3 vWorldPosition;'
-        );
-        shader.fragmentShader = shader.fragmentShader.replace(
-          '#include <color_fragment>',
-          [
-            '#include <color_fragment>',
-            'float submerged = smoothstep(waterLevel + 0.015, waterLevel - 0.015, vWorldPosition.y);',
-            'diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.03, 0.42, 0.62), submerged);',
-            'diffuseColor.rgb *= mix(1.0, 0.72, submerged);'
-          ].join('\n')
-        );
-      };
+      addUnderwaterCaustics(material, { tintSubmerged: true });
 
       this.mesh = new THREE.Mesh(geometry, material);
       this.mesh.castShadow = true;
       this.mesh.receiveShadow = true;
       this.mesh.position.set(-0.5, this.radius * 0.25, 0.3);
       objectScene.add(this.mesh);
-
-      const waterlineGeometry = new THREE.TorusBufferGeometry(1, 0.006, 8, 72);
-      const waterlineMaterial = new THREE.MeshBasicMaterial({
-        color: 0xd7f8ff,
-        transparent: true,
-        opacity: 0.85,
-      });
-      this.waterline = new THREE.Mesh(waterlineGeometry, waterlineMaterial);
-      this.waterline.rotation.x = Math.PI / 2;
-      this.waterline.visible = false;
-      objectScene.add(this.waterline);
-
-      const shadowGeometry = new THREE.CircleBufferGeometry(this.radius * 1.15, 48);
-      const shadowMaterial = new THREE.MeshBasicMaterial({
-        color: 0x000000,
-        transparent: true,
-        opacity: 0.22,
-        depthWrite: false,
-      });
-      this.shadow = new THREE.Mesh(shadowGeometry, shadowMaterial);
-      this.shadow.rotation.x = -Math.PI / 2;
-      this.shadow.position.set(this.mesh.position.x, 0.004, this.mesh.position.z);
-      objectScene.add(this.shadow);
     }
 
     setVisible(visible) {
       this.visible = visible;
       this.mesh.visible = visible;
-      this.shadow.visible = visible;
-      this.waterline.visible = false;
     }
 
     setBuoyancy(value) {
@@ -910,10 +937,7 @@ class FloatingSphere {
 
       if (draggedVessel === this) {
         this.velocity = 0;
-        this.mesh.position.y = this.waterLevel;
         this.clampToPool();
-        this.updateShadow();
-        this.updateWaterline();
         return;
       }
 
@@ -939,45 +963,6 @@ class FloatingSphere {
       }
 
       this.clampToPool();
-      this.updateShadow();
-      this.updateWaterline();
-    }
-
-    updateShadow() {
-      if (!this.visible) {
-        this.shadow.visible = false;
-        return;
-      }
-
-      this.shadow.visible = true;
-      const heightAboveWater = Math.max(0, this.mesh.position.y - this.waterLevel);
-      const scale = Math.max(0.35, 1.15 - heightAboveWater * 1.8);
-
-      this.shadow.position.x = this.mesh.position.x;
-      this.shadow.position.z = this.mesh.position.z;
-      this.shadow.scale.set(scale, scale, 1);
-      this.shadow.material.opacity = Math.max(0.04, 0.24 - heightAboveWater * 0.3);
-    }
-
-    updateWaterline() {
-      if (!this.visible) {
-        this.waterline.visible = false;
-        return;
-      }
-
-      if (this.sphereShader) {
-        this.sphereShader.uniforms.waterLevel.value = this.waterLevel;
-      }
-
-      const waterOffset = this.waterLevel - this.mesh.position.y;
-      const intersectsWater = Math.abs(waterOffset) < this.radius;
-
-      this.waterline.visible = intersectsWater;
-      if (!intersectsWater) return;
-
-      const ringRadius = Math.sqrt(this.radius * this.radius - waterOffset * waterOffset);
-      this.waterline.position.set(this.mesh.position.x, this.waterLevel + 0.002, this.mesh.position.z);
-      this.waterline.scale.set(ringRadius, ringRadius, 1);
     }
 
     draw(renderer) {
@@ -1060,6 +1045,7 @@ class FloatingSphere {
             if (child.isMesh) {
               child.castShadow = true;
               child.receiveShadow = true;
+              addUnderwaterCaustics(child.material, { tintSubmerged: true });
             }
           });
 
@@ -2117,6 +2103,7 @@ class FloatingSphere {
     const causticsTexture = caustics.texture.texture;
 
     // debug.draw(renderer, causticsTexture);
+    updateObjectCausticUniforms(waterTexture, causticsTexture);
     updateReflectionTexture();
 
     renderer.setRenderTarget(null);
