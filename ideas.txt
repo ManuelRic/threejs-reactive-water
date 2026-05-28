@@ -29,3 +29,5 @@ section in control board to implement additional controls for visualazing or rem
 if wake height > object => go over object
 
 WORK ON BOAT WAKE
+
+make wake offset, vessel offest, etc. not hard coded

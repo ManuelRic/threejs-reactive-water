@@ -140,6 +140,8 @@ const shipTrackWakeSpacing = 0.06;
 const shipTrackWakeStrength = 0.018;
 const shipTurnWakeStrength = 0.035;
 const shipTurnWakeSensitivity = 5.5;
+const shipWakeTrailHistoryLimit = 48;
+const shipWakeTrailMinSampleDistance = 0.012;
 const shipWakeBowOffset = 0.3;
 const shipWakeSternOffset = 0.28;
 const shipWakeBeam = 0.18;
@@ -352,6 +354,7 @@ loadFile('shaders/utils.glsl').then((utils) => {
       maxWakeLength: options.maxWakeLength || null,
       maxWakeBeam: options.maxWakeBeam || null,
       headingYawOffset: options.headingYawOffset || 0,
+      wakeShape: options.wakeShape || 'blunt',
       samples: [],
     };
 
@@ -1078,11 +1081,31 @@ loadFile('shaders/utils.glsl').then((utils) => {
       this.mesh.position.set(0.55, this.floatOffset, -0.42);
       objectScene.add(this.mesh);
       registerWaterBounceObject(this.mesh);
+      registerObjectWaterInteraction(this.mesh, {
+        sampleLimit: 360,
+        radiusScale: 1.05,
+        strengthScale: 0.82,
+        maxWakeLength: this.size,
+        maxWakeBeam: this.size,
+        wakeShape: 'blunt',
+      });
     }
 
     setVisible(visible) {
       this.visible = visible;
       this.mesh.visible = visible;
+    }
+
+    clampToPool() {
+      this.mesh.position.x = Math.min(vesselMovementBounds, Math.max(-vesselMovementBounds, this.mesh.position.x));
+      this.mesh.position.z = Math.min(vesselMovementBounds, Math.max(-vesselMovementBounds, this.mesh.position.z));
+      this.mesh.updateMatrixWorld();
+    }
+
+    moveToWaterPoint(point) {
+      this.mesh.position.x = point.x;
+      this.mesh.position.z = point.z;
+      this.clampToPool();
     }
 
     update(time) {
@@ -1123,6 +1146,9 @@ class FloatingSphere {
         sampleLimit: 420,
         radiusScale: 1.25,
         strengthScale: 0.78,
+        maxWakeLength: this.radius * 2,
+        maxWakeBeam: this.radius * 2,
+        wakeShape: 'blunt',
       });
     }
 
@@ -1203,6 +1229,7 @@ class FloatingSphere {
       this.wakeEmitters = [];
       this.wakeDirection = null;
       this.wakeTurnAmount = 0;
+      this.wakeTrailHistory = [];
       this.wakeExtents = {
         bow: shipWakeBowOffset,
         stern: shipWakeSternOffset,
@@ -1271,6 +1298,7 @@ class FloatingSphere {
             maxWakeLength: this.wakeExtents.bow + this.wakeExtents.stern,
             maxWakeBeam: this.wakeExtents.beam,
             headingYawOffset: shipMovementYawOffset,
+            wakeShape: 'hull',
           });
 
           this.update(0, 0);
@@ -1901,6 +1929,11 @@ class FloatingSphere {
 
   toggleSquareButton.addEventListener('click', () => {
     floatingSquare.setVisible(!floatingSquare.visible);
+    if (!floatingSquare.visible && draggedVessel === floatingSquare) {
+      draggedVessel = null;
+      draggedVesselOffset = { x: 0, z: 0 };
+      lastWakePoint = null;
+    }
     setToggleButtonState(toggleSquareButton, floatingSquare.visible);
   });
 
@@ -1994,11 +2027,11 @@ class FloatingSphere {
   });
 
   function hasVisibleVessel() {
-    return floatingSphere.visible || cargoShip.visible;
+    return floatingSphere.visible || floatingSquare.visible || cargoShip.visible;
   }
 
   function getVesselPoint(vessel) {
-    const position = vessel === floatingSphere ? floatingSphere.mesh.position : cargoShip.group.position;
+    const position = vessel.group ? vessel.group.position : vessel.mesh.position;
 
     return {
       x: position.x,
@@ -2049,6 +2082,7 @@ class FloatingSphere {
   function resetShipWakeDirection() {
     cargoShip.wakeDirection = null;
     cargoShip.wakeTurnAmount = 0;
+    cargoShip.wakeTrailHistory.length = 0;
   }
 
   function emitCargoShipMovementWake(fromPoint, toPoint, wakeSpeedOverride = null) {
@@ -2063,6 +2097,7 @@ class FloatingSphere {
     const wakeDz = toPoint.z - wakeFromPoint.z;
 
     if (Math.sqrt(wakeDx * wakeDx + wakeDz * wakeDz) >= wakeMinMovement) {
+      addMovementWake(cargoShip, wakeFromPoint, toPoint, wakeSpeedOverride);
       shipAutoLastWakePoint = { x: toPoint.x, z: toPoint.z };
     }
   }
@@ -2189,6 +2224,16 @@ class FloatingSphere {
         hits.push({
           distance: sphereHits[0].distance,
           vessel: floatingSphere,
+        });
+      }
+    }
+
+    if (floatingSquare.visible) {
+      const squareHits = raycaster.intersectObject(floatingSquare.mesh, true);
+      if (squareHits.length > 0) {
+        hits.push({
+          distance: squareHits[0].distance,
+          vessel: floatingSquare,
         });
       }
     }
@@ -2582,23 +2627,40 @@ class FloatingSphere {
 
     const effectiveLength = dimensions.length;
     const effectiveBeam = dimensions.beam;
+    const isHullWake = interaction.wakeShape === 'hull';
     const speedLengthScale = 0.6 + speedAmount * 0.5;
     const alignment = getObjectWakeHeadingAlignment(interaction, directionX, directionZ);
-    const turnWakeScale = 0.48 + alignment * 0.52;
+    const turnWakeScale = isHullWake ? 0.48 + alignment * 0.52 : 0.7;
+    const trailLengthLimit = dimensions.maxLength * (isHullWake ? 2.15 : 1.25);
+    const divergentLengthLimit = dimensions.maxLength * (isHullWake ? 1.9 : 1.1);
     const centerSide = (contacts.minSide + contacts.maxSide) * 0.5;
     const trailLength = Math.min(
-      dimensions.maxLength * 2.15,
-      Math.max(0.28, effectiveLength * 1.75, effectiveBeam * 2.7) * speedLengthScale
+      trailLengthLimit,
+      Math.max(
+        isHullWake ? 0.28 : 0.12,
+        effectiveLength * (isHullWake ? 1.75 : 1.05),
+        effectiveBeam * (isHullWake ? 2.7 : 1.55)
+      ) * speedLengthScale
     );
-    const trailWidth = Math.max(0.014, Math.min(0.075, effectiveBeam * 0.18)) * interaction.radiusScale;
+    const trailWidth = Math.max(
+      isHullWake ? 0.014 : 0.018,
+      Math.min(isHullWake ? 0.075 : 0.09, effectiveBeam * (isHullWake ? 0.18 : 0.32))
+    ) * interaction.radiusScale;
     const divergentLength = Math.min(
-      dimensions.maxLength * 1.9,
-      Math.max(0.26, effectiveLength * 1.5, effectiveBeam * 2.5) * speedLengthScale
+      divergentLengthLimit,
+      Math.max(
+        isHullWake ? 0.26 : 0.1,
+        effectiveLength * (isHullWake ? 1.5 : 0.85),
+        effectiveBeam * (isHullWake ? 2.5 : 1.2)
+      ) * speedLengthScale
     );
-    const divergentWidth = Math.max(0.012, Math.min(0.052, effectiveBeam * 0.1)) * interaction.radiusScale;
-    const leadingStrength = objectWaterLeadingStrength * interaction.strengthScale * speedAmount * (0.78 + alignment * 0.22);
+    const divergentWidth = Math.max(
+      0.012,
+      Math.min(isHullWake ? 0.052 : 0.04, effectiveBeam * (isHullWake ? 0.1 : 0.16))
+    ) * interaction.radiusScale;
+    const leadingStrength = objectWaterLeadingStrength * interaction.strengthScale * speedAmount * (isHullWake ? 0.78 + alignment * 0.22 : 0.62);
     const trailStrength = objectWaterTrailStrength * interaction.strengthScale * speedAmount * turnWakeScale;
-    const divergentStrength = objectWaterDivergentStrength * interaction.strengthScale * speedAmount * turnWakeScale;
+    const divergentStrength = objectWaterDivergentStrength * interaction.strengthScale * speedAmount * turnWakeScale * (isHullWake ? 1 : 0.42);
     const sortedLeading = [...edges.leading].sort((a, b) => a.side - b.side);
     const leftLeading = sortedLeading[0];
     const rightLeading = sortedLeading[sortedLeading.length - 1];
@@ -2620,10 +2682,13 @@ class FloatingSphere {
         bowCut.z,
         trailX,
         trailZ,
-        Math.max(effectiveLength * 0.34, effectiveBeam * 1.05),
-        Math.max(0.014, Math.min(0.07, effectiveBeam * 0.16)) * interaction.radiusScale,
-        -cutStrength * 0.55,
-        -cutStrength * 0.2,
+        Math.max(effectiveLength * (isHullWake ? 0.34 : 0.24), effectiveBeam * (isHullWake ? 1.05 : 0.8)),
+        Math.max(
+          isHullWake ? 0.014 : 0.02,
+          Math.min(isHullWake ? 0.07 : 0.095, effectiveBeam * (isHullWake ? 0.16 : 0.38))
+        ) * interaction.radiusScale,
+        -cutStrength * (isHullWake ? 0.55 : 0.36),
+        -cutStrength * (isHullWake ? 0.2 : 0.12),
         0.18
       );
     }
@@ -2646,23 +2711,28 @@ class FloatingSphere {
         sideRail.z,
         trailX,
         trailZ,
-        Math.max(effectiveLength * 0.82, effectiveBeam * 1.8),
-        Math.max(0.012, Math.min(0.052, effectiveBeam * 0.095)) * interaction.radiusScale,
-        leadingStrength * 0.46,
-        leadingStrength * 0.28,
+        Math.max(effectiveLength * (isHullWake ? 0.82 : 0.42), effectiveBeam * (isHullWake ? 1.8 : 0.85)),
+        Math.max(
+          0.012,
+          Math.min(isHullWake ? 0.052 : 0.045, effectiveBeam * (isHullWake ? 0.095 : 0.18))
+        ) * interaction.radiusScale,
+        leadingStrength * (isHullWake ? 0.46 : 0.22),
+        leadingStrength * (isHullWake ? 0.28 : 0.16),
         0.32
       );
-      addObjectDivergentPressure(
-        shoulder || sideRail,
-        trailX,
-        trailZ,
-        sideX,
-        sideZ,
-        sideSign,
-        divergentLength * 0.92,
-        divergentWidth,
-        divergentStrength * (shoulder ? shoulder.immersion : 0.65) * 1.15
-      );
+      if (isHullWake || speedAmount > 0.35) {
+        addObjectDivergentPressure(
+          shoulder || sideRail,
+          trailX,
+          trailZ,
+          sideX,
+          sideZ,
+          sideSign,
+          divergentLength * (isHullWake ? 0.92 : 0.55),
+          divergentWidth,
+          divergentStrength * (shoulder ? shoulder.immersion : 0.65) * (isHullWake ? 1.15 : 0.65)
+        );
+      }
     }
 
     const sortedTrailing = [...edges.trailing].sort((a, b) => a.side - b.side);
@@ -2679,9 +2749,9 @@ class FloatingSphere {
         trailX,
         trailZ,
         trailLength,
-        trailWidth * 1.45,
-        -strength * 0.72,
-        strength * 0.56,
+        trailWidth * (isHullWake ? 1.45 : 1.2),
+        -strength * (isHullWake ? 0.72 : 0.42),
+        strength * (isHullWake ? 0.56 : 0.34),
         1.0
       );
 
@@ -2700,10 +2770,10 @@ class FloatingSphere {
           washTrack.z,
           trailX,
           trailZ,
-          trailLength * 0.72,
-          trailWidth * 0.65,
-          strength * 0.34,
-          strength * 0.5,
+          trailLength * (isHullWake ? 0.72 : 0.55),
+          trailWidth * (isHullWake ? 0.65 : 0.8),
+          strength * (isHullWake ? 0.34 : 0.2),
+          strength * (isHullWake ? 0.5 : 0.28),
           0.9
         );
       }
@@ -2720,23 +2790,25 @@ class FloatingSphere {
         point.z,
         trailX,
         trailZ,
-        trailLength * 0.82,
-        trailWidth * 0.72,
-        strength * 0.32,
-        strength * 0.48,
+        trailLength * (isHullWake ? 0.82 : 0.5),
+        trailWidth * (isHullWake ? 0.72 : 0.7),
+        strength * (isHullWake ? 0.32 : 0.16),
+        strength * (isHullWake ? 0.48 : 0.24),
         0.62
       );
-      addObjectDivergentPressure(
-        point,
-        trailX,
-        trailZ,
-        sideX,
-        sideZ,
-        sideSign,
-        divergentLength,
-        divergentWidth,
-        divergentStrength * (0.45 + point.immersion * 0.55)
-      );
+      if (isHullWake || speedAmount > 0.45) {
+        addObjectDivergentPressure(
+          point,
+          trailX,
+          trailZ,
+          sideX,
+          sideZ,
+          sideSign,
+          divergentLength * (isHullWake ? 1 : 0.45),
+          divergentWidth,
+          divergentStrength * (0.45 + point.immersion * 0.55)
+        );
+      }
     }
   }
 
@@ -2939,22 +3011,29 @@ class FloatingSphere {
     addWakeDrop(emitter.origin.x, emitter.origin.z, emitter.radius, emitter.strength);
   }
 
-  function addSphereWake(fromPoint, toPoint, directionX, directionZ, perpendicularX, perpendicularZ, speed) {
-    const bowX = toPoint.x + directionX * floatingSphere.radius;
-    const bowZ = toPoint.z + directionZ * floatingSphere.radius;
+  function getVesselWakeRadius(vessel) {
+    if (vessel === cargoShip) return cargoShip.wakeExtents.beam * 0.5;
+    if (vessel === floatingSquare) return floatingSquare.size * 0.5;
+    return floatingSphere.radius;
+  }
 
-    addWakeDrop(bowX, bowZ, floatingSphere.radius * 0.55, wakeTroughStrength * speed);
+  function addBluntObjectWake(vessel, toPoint, directionX, directionZ, perpendicularX, perpendicularZ, speed) {
+    const radius = getVesselWakeRadius(vessel);
+    const bowX = toPoint.x + directionX * radius;
+    const bowZ = toPoint.z + directionZ * radius;
+
+    addWakeDrop(bowX, bowZ, radius * 0.52, wakeTroughStrength * speed * 0.7);
     addWakeDrop(
-      bowX + perpendicularX * floatingSphere.radius * 0.72,
-      bowZ + perpendicularZ * floatingSphere.radius * 0.72,
-      floatingSphere.radius * 0.44,
-      wakeStrength * speed
+      bowX + perpendicularX * radius * 0.72,
+      bowZ + perpendicularZ * radius * 0.72,
+      radius * 0.42,
+      wakeStrength * speed * 0.65
     );
     addWakeDrop(
-      bowX - perpendicularX * floatingSphere.radius * 0.72,
-      bowZ - perpendicularZ * floatingSphere.radius * 0.72,
-      floatingSphere.radius * 0.44,
-      wakeStrength * speed
+      bowX - perpendicularX * radius * 0.72,
+      bowZ - perpendicularZ * radius * 0.72,
+      radius * 0.42,
+      wakeStrength * speed * 0.65
     );
   }
 
@@ -2988,15 +3067,213 @@ class FloatingSphere {
     return cargoShip.wakeTurnAmount;
   }
 
+  function normalizeWakeDirection(x, z) {
+    const length = Math.sqrt(x * x + z * z);
+    if (length < 0.0001) return { x: 0, z: 1 };
+
+    return {
+      x: x / length,
+      z: z / length,
+    };
+  }
+
+  function addShipWakeTrailSample(toPoint, directionX, directionZ, perpendicularX, perpendicularZ, speed, turnAmount) {
+    const sternOffset = cargoShip.wakeExtents.stern;
+    const sternX = toPoint.x - directionX * sternOffset;
+    const sternZ = toPoint.z - directionZ * sternOffset;
+    const history = cargoShip.wakeTrailHistory;
+    const last = history[history.length - 1];
+
+    if (last) {
+      const dx = sternX - last.x;
+      const dz = sternZ - last.z;
+      if (Math.sqrt(dx * dx + dz * dz) < shipWakeTrailMinSampleDistance) {
+        last.directionX = directionX;
+        last.directionZ = directionZ;
+        last.perpendicularX = perpendicularX;
+        last.perpendicularZ = perpendicularZ;
+        last.speed = speed;
+        last.turnAmount = turnAmount;
+        return;
+      }
+    }
+
+    history.push({
+      x: sternX,
+      z: sternZ,
+      directionX,
+      directionZ,
+      perpendicularX,
+      perpendicularZ,
+      speed,
+      turnAmount,
+    });
+
+    while (history.length > shipWakeTrailHistoryLimit) {
+      history.shift();
+    }
+  }
+
+  function getShipWakeTrailSamples(spacing, count) {
+    const history = cargoShip.wakeTrailHistory;
+    const samples = [];
+    if (history.length < 2) return samples;
+
+    let walked = 0;
+    let target = spacing;
+
+    for (let i = history.length - 1; i > 0 && samples.length < count; i--) {
+      const current = history[i];
+      const previous = history[i - 1];
+      const dx = previous.x - current.x;
+      const dz = previous.z - current.z;
+      const segmentLength = Math.sqrt(dx * dx + dz * dz);
+      if (segmentLength < 0.0001) continue;
+
+      while (walked + segmentLength >= target && samples.length < count) {
+        const t = (target - walked) / segmentLength;
+        const direction = normalizeWakeDirection(
+          current.directionX + (previous.directionX - current.directionX) * t,
+          current.directionZ + (previous.directionZ - current.directionZ) * t
+        );
+        const perpendicularX = -direction.z;
+        const perpendicularZ = direction.x;
+
+        samples.push({
+          x: current.x + dx * t,
+          z: current.z + dz * t,
+          directionX: direction.x,
+          directionZ: direction.z,
+          perpendicularX,
+          perpendicularZ,
+          speed: current.speed + (previous.speed - current.speed) * t,
+          turnAmount: current.turnAmount + (previous.turnAmount - current.turnAmount) * t,
+          distance: target,
+        });
+
+        target += spacing;
+      }
+
+      walked += segmentLength;
+    }
+
+    return samples;
+  }
+
+  function addShipBowWake(toPoint, directionX, directionZ, perpendicularX, perpendicularZ, speed) {
+    const bowOffset = cargoShip.wakeExtents.bow;
+    const beam = cargoShip.wakeExtents.beam;
+    const profile = cargoShip.wakeProfile;
+    const bowX = toPoint.x + directionX * bowOffset;
+    const bowZ = toPoint.z + directionZ * bowOffset;
+
+    addWakeDrop(bowX, bowZ, profile.bowRadius * 0.85, wakeTroughStrength * speed * 0.52);
+
+    for (const sideSign of [-1, 1]) {
+      const shoulderX = bowX - directionX * profile.bowRadius * 0.6 + perpendicularX * beam * 0.52 * sideSign;
+      const shoulderZ = bowZ - directionZ * profile.bowRadius * 0.6 + perpendicularZ * beam * 0.52 * sideSign;
+
+      addWakeDrop(
+        shoulderX,
+        shoulderZ,
+        profile.bowRadius * 0.58,
+        wakeStrength * speed * 0.36
+      );
+
+      for (let i = 0; i < 3; i++) {
+        const trail = (i + 1) * profile.trackWakeSpacing * 0.9;
+        const spread = beam * 0.45 + trail * 0.62;
+        const fade = 1 - i / 3;
+
+        addWakeDrop(
+          bowX - directionX * trail + perpendicularX * spread * sideSign,
+          bowZ - directionZ * trail + perpendicularZ * spread * sideSign,
+          profile.bowRadius * (0.45 + i * 0.12),
+          wakeStrength * speed * fade * 0.22
+        );
+      }
+    }
+  }
+
+  function addShipTrackWake(toPoint, directionX, directionZ, perpendicularX, perpendicularZ, speed, turnAmount) {
+    const profile = cargoShip.wakeProfile;
+    const turnMagnitude = Math.min(1, Math.abs(turnAmount));
+    const trackSideOffset = profile.trackSideOffset;
+    const wakeCount = profile.trackWakeCount + Math.round(turnMagnitude * 3);
+    const samples = getShipWakeTrailSamples(profile.trackWakeSpacing, wakeCount);
+
+    for (let i = 0; i < samples.length; i++) {
+      const sample = samples[i];
+      const sampleTurnMagnitude = Math.min(1, Math.abs(sample.turnAmount));
+      const turnSign = sample.turnAmount === 0 ? 0 : Math.sign(sample.turnAmount);
+      const fade = 1 - i / Math.max(1, wakeCount);
+      const curve = turnSign * sampleTurnMagnitude * Math.min(sample.distance * 0.18, trackSideOffset * 0.95);
+      const centerX = sample.x + sample.perpendicularX * curve * 0.35;
+      const centerZ = sample.z + sample.perpendicularZ * curve * 0.35;
+      const radius = profile.baseTrackRadius * (0.82 + i * 0.12);
+      const insideDamp = 1 - sampleTurnMagnitude * 0.32;
+      const outsideBoost = 1 + sampleTurnMagnitude * 0.78;
+      const sampleSpeed = Math.max(speed * 0.45, sample.speed);
+
+      addWakeDrop(
+        centerX + sample.perpendicularX * (trackSideOffset + curve),
+        centerZ + sample.perpendicularZ * (trackSideOffset + curve),
+        radius,
+        shipTrackWakeStrength * sampleSpeed * fade * (turnSign >= 0 ? outsideBoost : insideDamp)
+      );
+      addWakeDrop(
+        centerX - sample.perpendicularX * (trackSideOffset - curve),
+        centerZ - sample.perpendicularZ * (trackSideOffset - curve),
+        radius,
+        shipTrackWakeStrength * sampleSpeed * fade * (turnSign <= 0 ? outsideBoost : insideDamp)
+      );
+      addWakeDrop(
+        centerX,
+        centerZ,
+        radius * 1.28,
+        wakeTroughStrength * sampleSpeed * fade * (0.26 + sampleTurnMagnitude * 0.18)
+      );
+    }
+  }
+
+  function addShipTurnWake(toPoint, directionX, directionZ, perpendicularX, perpendicularZ, speed, turnAmount) {
+    const turnMagnitude = Math.min(1, Math.abs(turnAmount));
+    if (turnMagnitude < 0.06) return;
+
+    const beam = cargoShip.wakeExtents.beam;
+    const profile = cargoShip.wakeProfile;
+    const fanCount = Math.max(3, Math.round(profile.trackWakeCount * 0.7));
+    const samples = getShipWakeTrailSamples(profile.trackWakeSpacing * 0.85, fanCount);
+
+    for (let i = 0; i < samples.length; i++) {
+      const sample = samples[i];
+      const sampleTurnMagnitude = Math.min(1, Math.abs(sample.turnAmount));
+      if (sampleTurnMagnitude < 0.04) continue;
+
+      const turnSign = Math.sign(sample.turnAmount);
+      const fade = 1 - i / Math.max(1, fanCount);
+      const side = beam * 0.42 + sample.distance * (0.55 + sampleTurnMagnitude * 0.85);
+      const radius = profile.baseTurnRadius * (0.72 + i * 0.14);
+
+      addWakeDrop(
+        sample.x + sample.perpendicularX * side * turnSign,
+        sample.z + sample.perpendicularZ * side * turnSign,
+        radius,
+        shipTurnWakeStrength * Math.max(speed * 0.45, sample.speed) * sampleTurnMagnitude * fade * 0.72
+      );
+    }
+  }
+
   function addTrailingKelvinWake(vessel, fromPoint, toPoint, directionX, directionZ, perpendicularX, perpendicularZ, speed) {
-    const originOffset = vessel === cargoShip ? cargoShip.wakeExtents.stern : floatingSphere.radius * 0.95;
+    const objectRadius = getVesselWakeRadius(vessel);
+    const originOffset = vessel === cargoShip ? cargoShip.wakeExtents.stern : objectRadius * 0.95;
     const originX = toPoint.x - directionX * originOffset;
     const originZ = toPoint.z - directionZ * originOffset;
     const turnMagnitude = vessel === cargoShip ? Math.min(1, Math.abs(cargoShip.wakeTurnAmount)) : 0;
     const wakeCount = vessel === cargoShip ? cargoShip.wakeProfile.kelvinWakeCount : wakeDropCount;
     const trailSpacing = vessel === cargoShip ? cargoShip.wakeProfile.kelvinWakeSpacing : wakeTrailSpacing;
-    const baseRadius = vessel === cargoShip ? cargoShip.wakeProfile.baseTrackRadius : 0.026;
-    const radiusGrowth = vessel === cargoShip ? cargoShip.wakeProfile.baseTrackRadius * 0.16 : 0.005;
+    const baseRadius = vessel === cargoShip ? cargoShip.wakeProfile.baseTrackRadius : Math.max(0.018, objectRadius * 0.22);
+    const radiusGrowth = vessel === cargoShip ? cargoShip.wakeProfile.baseTrackRadius * 0.16 : Math.max(0.003, objectRadius * 0.035);
 
     for (let i = 1; i <= wakeCount; i++) {
       const trail = i * trailSpacing;
@@ -3046,9 +3323,13 @@ class FloatingSphere {
     const wakeSpeed = vessel === cargoShip ? Math.max(movementSpeed, shipWakeMinVisibleSpeed) : speed;
 
     if (vessel === cargoShip) {
-      getShipTurnAmount(directionX, directionZ);
+      const turnAmount = getShipTurnAmount(directionX, directionZ);
+      addShipWakeTrailSample(toPoint, directionX, directionZ, perpendicularX, perpendicularZ, wakeSpeed, turnAmount);
+      addShipBowWake(toPoint, directionX, directionZ, perpendicularX, perpendicularZ, wakeSpeed);
+      addShipTrackWake(toPoint, directionX, directionZ, perpendicularX, perpendicularZ, wakeSpeed, turnAmount);
+      addShipTurnWake(toPoint, directionX, directionZ, perpendicularX, perpendicularZ, wakeSpeed, turnAmount);
     } else {
-      addSphereWake(fromPoint, toPoint, directionX, directionZ, perpendicularX, perpendicularZ, speed);
+      addBluntObjectWake(vessel, toPoint, directionX, directionZ, perpendicularX, perpendicularZ, speed);
     }
 
     if (vessel !== cargoShip) {
@@ -3080,6 +3361,10 @@ class FloatingSphere {
 
     event.preventDefault();
     const targetPoint = getOffsetWaterPoint(point);
+
+    if (lastWakePoint && draggedVessel !== cargoShip) {
+      addMovementWake(draggedVessel, lastWakePoint, targetPoint);
+    }
 
     draggedVessel.moveToWaterPoint(targetPoint);
     lastWakePoint = getVesselPoint(draggedVessel);
