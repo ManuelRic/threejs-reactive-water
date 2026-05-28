@@ -8,6 +8,7 @@ uniform float wakeHeightRecovery;
 uniform float maxWakeHeight;
 uniform float waterBounceCount;
 uniform vec4 waterBounceRects[16];
+uniform sampler2D objectPressureTexture;
 varying vec2 coord;
 
 float isWaterBounce(vec2 point) {
@@ -67,6 +68,20 @@ void main() {
 
   /* move the vertex along the velocity */
   info.r += info.g;
+
+  vec4 objectPressure = texture2D(objectPressureTexture, coord);
+  if (objectPressure.a > 0.000001) {
+    float targetHeight = objectPressure.r;
+    float impulse = objectPressure.g;
+    float turbulence = objectPressure.b;
+    float correction = targetHeight - info.r;
+
+    info.g += correction * objectPressure.a * 0.28;
+    info.g += impulse * objectPressure.a * 0.78;
+    info.r += correction * objectPressure.a * 0.045;
+    info.g *= mix(1.0, 0.965, clamp(turbulence * objectPressure.a, 0.0, 1.0));
+  }
+
   info.r *= wakeHeightRecovery;
   info.r = clamp(info.r, -maxWakeHeight, maxWakeHeight);
 

@@ -35,6 +35,7 @@ varying vec3 eye;
 varying vec3 pos;
 varying vec4 reflectionCoord;
 varying vec2 waterUv;
+varying vec2 waterWaveUv;
 
 
 vec3 getSurfaceRayColor(vec3 origin, vec3 ray, vec3 waterColor) {
@@ -246,6 +247,15 @@ vec2 waterTextureScroll(float textureScale) {
   return scroll * textureScale * 0.5 * oceanWaveStrength;
 }
 
+vec2 waveLockedTextureCoord(float textureScale, vec2 wakeSlope, float surfaceSlope) {
+  vec2 waveCoord = waterWaveUv * textureScale;
+  vec2 waveAdvection = waterTextureScroll(textureScale) + waterTextureFlow(pos.xz) * textureScale;
+  vec2 wakeAdvection = wakeSlope * 0.34 * waterTextureEnabled;
+  vec2 slopeAdvection = vec2(surfaceSlope, -surfaceSlope) * 0.035 * oceanWaveSharpness;
+
+  return waveCoord + waveAdvection + wakeAdvection + slopeAdvection;
+}
+
 
 void main() {
   vec2 coord = pos.xz / (waterExtent * 2.0) + 0.5;
@@ -322,8 +332,8 @@ void main() {
   normal = normalize(normal + vec3(mottleNormal.x, 0.0, mottleNormal.y));
   float waterMottle = mix(1.0, mix(0.88, 1.08, waterPattern), waterMottleEnabled);
   float waterImageScale = waterTextureFrequency;
-  vec2 waterImageCoord = waterUv * waterImageScale + waterTextureScroll(waterImageScale) + waterTextureFlow(pos.xz);
-  waterImageCoord += info.ba * 0.48 * waterTextureEnabled;
+  vec2 waterImageCoord = waveLockedTextureCoord(waterImageScale, info.ba, oceanSlope + heightSlope);
+  waterImageCoord += info.ba * 0.14 * waterTextureEnabled;
   waterImageCoord += vec2(heightSlope + oceanSlope, oceanSlope - heightSlope) * 0.18;
   vec3 waterImageColor = texture2D(waterImageTexture, waterImageCoord).rgb;
   vec3 waterTextureColor = mix(vec3(0.02, 0.22, 0.34), waterImageColor * vec3(0.7, 1.05, 1.25), 0.75);

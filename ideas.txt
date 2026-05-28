@@ -25,3 +25,7 @@ still need to implement foam to wave above x height, or outside of how untochued
 fix wake jitter
 
 section in control board to implement additional controls for visualazing or removing effects, increasing waves, bouyancy, etc.
+
+if wake height > object => go over object
+
+WORK ON BOAT WAKE

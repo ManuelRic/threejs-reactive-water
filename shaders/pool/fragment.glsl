@@ -1,6 +1,7 @@
 precision highp float;
 precision highp int;
 
+#define USE_WAVE_CAUSTIC_WATER_LEVEL
 #include <utils>
 
 varying vec3 pos;
@@ -9,9 +10,7 @@ varying vec3 pos;
 void main() {
   gl_FragColor = vec4(getWallColor(pos), 1.0);
 
-  vec4 info = texture2D(water, pos.xz / (poolHalfSize * 2.0) + 0.5);
-
-  if (pos.y < info.r) {
+  if (pos.y < getCausticWaterLevel(pos.xz)) {
     gl_FragColor.rgb *= underwaterColor * 1.2;
   }
 }

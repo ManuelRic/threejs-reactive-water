@@ -18,6 +18,7 @@ varying vec3 eye;
 varying vec3 pos;
 varying vec4 reflectionCoord;
 varying vec2 waterUv;
+varying vec2 waterWaveUv;
 
 struct OceanWave {
   vec2 direction;
@@ -116,6 +117,7 @@ void main() {
   vec3 ocean = oceanDisplacement(pos.xz);
   pos.xz += ocean.xz;
   pos.y += ocean.y + info.r * wakeWaveStrength * waterTextureEnabled;
+  waterWaveUv = pos.xz / (waterExtent * 2.0) + 0.5;
   reflectionCoord = reflectionTextureMatrix * vec4(pos, 1.0);
 
   vec3 axis_x = vec3(modelViewMatrix[0].x, modelViewMatrix[0].y, modelViewMatrix[0].z);
