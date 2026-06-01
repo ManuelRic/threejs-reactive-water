@@ -55,9 +55,14 @@ const toggleWaveCausticsButton = document.getElementById('toggle-wave-caustics')
 const toggleWaterTextureButton = document.getElementById('toggle-water-texture');
 const toggleWireframeButton = document.getElementById('toggle-wireframe');
 
-const waterExtent = 2.5;
-const wallExtent = 2.0;
-const vesselMovementBounds = wallExtent - 0.25;
+// Change these two values to resize the pool plane.
+const waterWidth = 7.0;
+const waterLength = 7.0;
+const waterHalfWidth = waterWidth * 0.5;
+const waterHalfLength = waterLength * 0.5;
+const waterSize = new THREE.Vector2(waterWidth, waterLength);
+const waterHalfSize = new THREE.Vector2(waterHalfWidth, waterHalfLength);
+const vesselMovementBounds = Math.min(waterHalfWidth, waterHalfLength) * 0.98;
 const maxWaterBounceObjects = 16;
 const objectPressureFieldResolution = 96;
 
@@ -363,12 +368,16 @@ loadFile('shaders/utils.glsl').then((utils) => {
     return interaction;
   }
 
-  function worldToWaterUv(value) {
-    return value / (waterExtent * 2) + 0.5;
+  function worldXToWaterUv(value) {
+    return value / waterWidth + 0.5;
+  }
+
+  function worldZToWaterUv(value) {
+    return value / waterLength + 0.5;
   }
 
   function getWaterEdgeFade(x, z) {
-    const edgeDistance = waterExtent - Math.max(Math.abs(x), Math.abs(z));
+    const edgeDistance = Math.min(waterHalfWidth - Math.abs(x), waterHalfLength - Math.abs(z));
     return smoothStep(0.0, objectWaterEdgeFadeDistance, edgeDistance);
   }
 
@@ -379,18 +388,18 @@ loadFile('shaders/utils.glsl').then((utils) => {
       if (!object.userData.waterBounce || !object.visible || count >= maxWaterBounceObjects) return;
 
       waterBounceBounds.setFromObject(object);
-      const minX = Math.max(-waterExtent, waterBounceBounds.min.x);
-      const maxX = Math.min(waterExtent, waterBounceBounds.max.x);
-      const minZ = Math.max(-waterExtent, waterBounceBounds.min.z);
-      const maxZ = Math.min(waterExtent, waterBounceBounds.max.z);
+      const minX = Math.max(-waterHalfWidth, waterBounceBounds.min.x);
+      const maxX = Math.min(waterHalfWidth, waterBounceBounds.max.x);
+      const minZ = Math.max(-waterHalfLength, waterBounceBounds.min.z);
+      const maxZ = Math.min(waterHalfLength, waterBounceBounds.max.z);
 
       if (minX >= maxX || minZ >= maxZ) return;
 
       waterBounceRectValues[count].set(
-        worldToWaterUv(minX),
-        worldToWaterUv(minZ),
-        worldToWaterUv(maxX),
-        worldToWaterUv(maxZ)
+        worldXToWaterUv(minX),
+        worldZToWaterUv(minZ),
+        worldXToWaterUv(maxX),
+        worldZToWaterUv(maxZ)
       );
       count++;
     });
@@ -416,10 +425,10 @@ loadFile('shaders/utils.glsl').then((utils) => {
   objectLight.position.set(light[0], light[1], light[2]);
   objectLight.castShadow = true;
   objectLight.shadow.mapSize.set(1024, 1024);
-  objectLight.shadow.camera.left = -3;
-  objectLight.shadow.camera.right = 3;
-  objectLight.shadow.camera.top = 3;
-  objectLight.shadow.camera.bottom = -3;
+  objectLight.shadow.camera.left = -waterHalfWidth;
+  objectLight.shadow.camera.right = waterHalfWidth;
+  objectLight.shadow.camera.top = waterHalfLength;
+  objectLight.shadow.camera.bottom = -waterHalfLength;
   objectLight.shadow.camera.near = 0.1;
   objectLight.shadow.camera.far = 6;
   objectLight.shadow.bias = -0.0004;
@@ -445,7 +454,7 @@ loadFile('shaders/utils.glsl').then((utils) => {
 
       shader.uniforms.objectWaterTexture = { value: currentObjectWaterTexture };
       shader.uniforms.objectCausticsTexture = { value: currentObjectCausticsTexture };
-      shader.uniforms.objectWaterExtent = { value: waterExtent };
+      shader.uniforms.objectWaterSize = { value: waterSize };
       shader.uniforms.objectCausticLight = { value: new THREE.Vector3(light[0], light[1], light[2]) };
       shader.uniforms.objectCausticTime = { value: 0 };
       shader.uniforms.objectOceanWaveStrength = { value: oceanWaveStrength };
@@ -471,7 +480,7 @@ loadFile('shaders/utils.glsl').then((utils) => {
           '#include <common>',
           'uniform sampler2D objectWaterTexture;',
           'uniform sampler2D objectCausticsTexture;',
-          'uniform float objectWaterExtent;',
+          'uniform vec2 objectWaterSize;',
           'uniform vec3 objectCausticLight;',
           'uniform float objectCausticTime;',
           'uniform float objectOceanWaveStrength;',
@@ -491,18 +500,18 @@ loadFile('shaders/utils.glsl').then((utils) => {
           'float objectCausticSpectralWaveHeight(vec2 point, vec2 direction, float frequency, float speed, float amplitude, float phase) { vec2 waveDirection = normalize(direction); float angle = dot(point, waveDirection) * frequency * objectOceanWaveFrequency + objectCausticTime * speed * objectOceanWaveSpeed + phase; return sin(angle) * amplitude; }',
           'float objectCausticSpectralOceanHeight(vec2 point) { float height = 0.0; height += objectCausticSpectralWaveHeight(point, vec2(1.00, 0.18), 2.60, 0.56, 0.42, 0.30); height += objectCausticSpectralWaveHeight(point, vec2(0.92, 0.38), 3.70, 0.72, 0.32, 2.10); height += objectCausticSpectralWaveHeight(point, vec2(0.72, 0.70), 5.20, 0.96, 0.24, 4.50); height += objectCausticSpectralWaveHeight(point, vec2(0.36, 0.94), 6.80, 1.15, 0.18, 1.40); height += objectCausticSpectralWaveHeight(point, vec2(-0.10, 1.00), 8.60, 1.42, 0.14, 5.30); height += objectCausticSpectralWaveHeight(point, vec2(-0.42, 0.91), 10.80, 1.68, 0.105, 0.80); height += objectCausticSpectralWaveHeight(point, vec2(0.58, -0.82), 12.60, 1.94, 0.080, 3.70); height += objectCausticSpectralWaveHeight(point, vec2(-0.74, 0.66), 15.20, 2.22, 0.060, 2.80); height += objectCausticSpectralWaveHeight(point, vec2(0.98, -0.22), 18.50, 2.55, 0.045, 5.90); height += objectCausticSpectralWaveHeight(point, vec2(-0.88, -0.48), 21.00, 2.88, 0.034, 1.90); height += objectCausticSpectralWaveHeight(point, vec2(0.18, 0.98), 24.80, 3.25, 0.026, 4.10); height += objectCausticSpectralWaveHeight(point, vec2(-0.26, 0.96), 29.50, 3.68, 0.020, 0.55); height += objectCausticSpectralWaveHeight(point, vec2(0.64, 0.77), 34.00, 4.05, 0.016, 3.20); height += objectCausticSpectralWaveHeight(point, vec2(-0.56, 0.83), 40.00, 4.52, 0.012, 5.05); height += objectCausticSpectralWaveHeight(point, vec2(0.86, 0.50), 48.00, 5.10, 0.009, 2.45); height += objectCausticSpectralWaveHeight(point, vec2(-0.98, 0.18), 56.00, 5.75, 0.007, 4.85); return height * objectOceanWaveStrength; }',
           'float objectCausticOceanHeight(vec2 point) { return mix(objectCausticGerstnerOceanHeight(point), objectCausticSpectralOceanHeight(point), objectFftWavesEnabled); }',
-          'float objectCausticWaterBounceMask(vec2 point) { vec2 uv = point / (objectWaterExtent * 2.0) + 0.5; float blocked = 0.0; for (int i = 0; i < 16; i++) { if (float(i) >= objectWaterBounceCount) { break; } vec4 rect = objectWaterBounceRects[i]; float inside = step(rect.x, uv.x) * step(uv.x, rect.z) * step(rect.y, uv.y) * step(uv.y, rect.w); blocked = max(blocked, inside); } return blocked; }',
+          'float objectCausticWaterBounceMask(vec2 point) { vec2 uv = point / objectWaterSize + 0.5; float blocked = 0.0; for (int i = 0; i < 16; i++) { if (float(i) >= objectWaterBounceCount) { break; } vec4 rect = objectWaterBounceRects[i]; float inside = step(rect.x, uv.x) * step(uv.x, rect.z) * step(rect.y, uv.y) * step(uv.y, rect.w); blocked = max(blocked, inside); } return blocked; }',
         ].join('\n')
       );
       shader.fragmentShader = shader.fragmentShader.replace(
         '#include <color_fragment>',
         [
           '#include <color_fragment>',
-          'vec2 objectWaterUv = vObjectWorldPosition.xz / (objectWaterExtent * 2.0) + 0.5;',
+          'vec2 objectWaterUv = vObjectWorldPosition.xz / objectWaterSize + 0.5;',
           'float objectWaterLevel = texture2D(objectWaterTexture, objectWaterUv).r + objectCausticOceanHeight(vObjectWorldPosition.xz) * objectWaveCausticsEnabled * (1.0 - objectCausticWaterBounceMask(vObjectWorldPosition.xz));',
           'float objectUnderwater = smoothstep(objectWaterLevel + 0.02, objectWaterLevel - 0.02, vObjectWorldPosition.y);',
           'vec3 objectRefractedLight = -refract(-normalize(objectCausticLight), vec3(0.0, 1.0, 0.0), 1.0 / 1.333);',
-          'vec2 objectCausticsUv = 0.75 * (vObjectWorldPosition.xz - vObjectWorldPosition.y * objectRefractedLight.xz / objectRefractedLight.y) / (objectWaterExtent * 2.0) + 0.5;',
+          'vec2 objectCausticsUv = 0.75 * (vObjectWorldPosition.xz - vObjectWorldPosition.y * objectRefractedLight.xz / objectRefractedLight.y) / objectWaterSize + 0.5;',
           'vec4 objectCaustic = texture2D(objectCausticsTexture, objectCausticsUv);',
           'float objectCausticStrength = objectCaustic.r * objectCaustic.g;',
           'diffuseColor.rgb *= 1.0 + objectUnderwater * objectCausticStrength * 1.15;',
@@ -545,7 +554,7 @@ loadFile('shaders/utils.glsl').then((utils) => {
   let previousMouseX = 0;
   let previousMouseY = 0;
 
-  const targetgeometry = new THREE.PlaneGeometry(waterExtent * 2, waterExtent * 2);
+  const targetgeometry = new THREE.PlaneGeometry(waterWidth, waterLength);
   for (let vertex of targetgeometry.vertices) {
     vertex.z = - vertex.y;
     vertex.y = 0.;
@@ -610,6 +619,7 @@ loadFile('shaders/utils.glsl').then((utils) => {
               center: { value: [0, 0] },
               radius: { value: 0 },
               strength: { value: 0 },
+              waterSize: { value: waterSize },
               texture: { value: null },
           },
           vertexShader: vertexShader,
@@ -668,8 +678,8 @@ loadFile('shaders/utils.glsl').then((utils) => {
 
     getHeightAt(renderer, x, z) {
       const pixel = new Float32Array(4);
-      const px = Math.min(255, Math.max(0, Math.floor(((x / waterExtent) * 0.5 + 0.5) * 256)));
-      const py = Math.min(255, Math.max(0, Math.floor(((z / waterExtent) * 0.5 + 0.5) * 256)));
+      const px = Math.min(255, Math.max(0, Math.floor((x / waterWidth + 0.5) * 256)));
+      const py = Math.min(255, Math.max(0, Math.floor((z / waterLength + 0.5) * 256)));
 
       try {
         renderer.readRenderTargetPixels(this.texture, px, py, 1, 1, pixel);
@@ -717,7 +727,8 @@ loadFile('shaders/utils.glsl').then((utils) => {
           uniforms: {
               light: { value: light },
               water: { value: null },
-              waterExtent: { value: waterExtent },
+              waterSize: { value: waterSize },
+              poolHalfSize: { value: waterHalfSize },
               time: { value: 0 },
               oceanWaveStrength: { value: oceanWaveStrength },
               oceanWaveFrequency: { value: oceanWaveFrequency },
@@ -762,7 +773,7 @@ loadFile('shaders/utils.glsl').then((utils) => {
   class Water {
 
     constructor() {
-      this.geometry = new THREE.PlaneBufferGeometry(waterExtent * 2, waterExtent * 2, 280, 280);
+      this.geometry = new THREE.PlaneBufferGeometry(waterWidth, waterLength, 280, 280);
 
       const shadersPromises = [
         loadFile('shaders/water/vertex.glsl'),
@@ -779,6 +790,7 @@ loadFile('shaders/utils.glsl').then((utils) => {
               water: { value: null },
               waterImageTexture: { value: waterImageTexture },
               causticTex: { value: null },
+              poolHalfSize: { value: waterHalfSize },
               reflectionTexture: { value: reflectionTarget.texture },
               reflectionTextureMatrix: { value: reflectionTextureMatrix },
               reflectionStrength: { value: reflectionStrength },
@@ -794,7 +806,7 @@ loadFile('shaders/utils.glsl').then((utils) => {
               wakeWaveStrength: { value: wakeWaveStrength },
               waterTextureEnabled: { value: waterTextureEnabled },
               waterImageTextureEnabled: { value: waterImageTextureEnabled },
-              waterExtent: { value: waterExtent },
+              waterSize: { value: waterSize },
               foamHeightThreshold: { value: foamHeightThreshold },
               foamHeightSoftness: { value: foamHeightSoftness },
               foamFromHeightStrength: { value: foamFromHeightStrength },
@@ -863,10 +875,10 @@ loadFile('shaders/utils.glsl').then((utils) => {
     constructor() {
       this._geometry = new THREE.BufferGeometry();
       const vertices = new Float32Array([
-        -waterExtent, 1, -waterExtent,
-        -waterExtent, 1, waterExtent,
-        waterExtent, 1, -waterExtent,
-        waterExtent, 1, waterExtent
+        -waterHalfWidth, 1, -waterHalfLength,
+        -waterHalfWidth, 1, waterHalfLength,
+        waterHalfWidth, 1, -waterHalfLength,
+        waterHalfWidth, 1, waterHalfLength
       ]);
       const indices = new Uint32Array([
         0, 1, 2,
@@ -889,6 +901,7 @@ loadFile('shaders/utils.glsl').then((utils) => {
               tiles: { value: tiles },
               water: { value: null },
               causticTex: { value: null },
+              poolHalfSize: { value: waterHalfSize },
               time: { value: 0 },
               oceanWaveStrength: { value: oceanWaveStrength },
               oceanWaveFrequency: { value: oceanWaveFrequency },
@@ -933,22 +946,22 @@ loadFile('shaders/utils.glsl').then((utils) => {
       this._geometry = new THREE.BufferGeometry();
 
       const vertices = new Float32Array([
-        -waterExtent, -1, -waterExtent,
-        -waterExtent, 0, -waterExtent,
-        waterExtent, -1, -waterExtent,
-        waterExtent, 0, -waterExtent,
-        waterExtent, -1, -waterExtent,
-        waterExtent, 0, -waterExtent,
-        waterExtent, -1, waterExtent,
-        waterExtent, 0, waterExtent,
-        waterExtent, -1, waterExtent,
-        waterExtent, 0, waterExtent,
-        -waterExtent, -1, waterExtent,
-        -waterExtent, 0, waterExtent,
-        -waterExtent, -1, waterExtent,
-        -waterExtent, 0, waterExtent,
-        -waterExtent, -1, -waterExtent,
-        -waterExtent, 0, -waterExtent
+        -waterHalfWidth, -1, -waterHalfLength,
+        -waterHalfWidth, 0, -waterHalfLength,
+        waterHalfWidth, -1, -waterHalfLength,
+        waterHalfWidth, 0, -waterHalfLength,
+        waterHalfWidth, -1, -waterHalfLength,
+        waterHalfWidth, 0, -waterHalfLength,
+        waterHalfWidth, -1, waterHalfLength,
+        waterHalfWidth, 0, waterHalfLength,
+        waterHalfWidth, -1, waterHalfLength,
+        waterHalfWidth, 0, waterHalfLength,
+        -waterHalfWidth, -1, waterHalfLength,
+        -waterHalfWidth, 0, waterHalfLength,
+        -waterHalfWidth, -1, waterHalfLength,
+        -waterHalfWidth, 0, waterHalfLength,
+        -waterHalfWidth, -1, -waterHalfLength,
+        -waterHalfWidth, 0, -waterHalfLength
       ]);
       const indices = new Uint16Array([
         0, 1, 2,
@@ -996,17 +1009,17 @@ loadFile('shaders/utils.glsl').then((utils) => {
       });
       addUnderwaterCaustics(material);
 
-      const longWallGeometry = new THREE.BoxBufferGeometry(wallExtent * 2 + wallThickness * 2, wallHeight, wallThickness);
-      const sideWallGeometry = new THREE.BoxBufferGeometry(wallThickness, wallHeight, wallExtent * 2);
+      const longWallGeometry = new THREE.BoxBufferGeometry(waterWidth + wallThickness * 2, wallHeight, wallThickness);
+      const sideWallGeometry = new THREE.BoxBufferGeometry(wallThickness, wallHeight, waterLength);
 
       const northWall = new THREE.Mesh(longWallGeometry, material);
-      northWall.position.set(0, wallY, -wallExtent - wallThickness * 0.5);
+      northWall.position.set(0, wallY, -waterHalfLength - wallThickness * 0.5);
       const southWall = new THREE.Mesh(longWallGeometry, material);
-      southWall.position.set(0, wallY, wallExtent + wallThickness * 0.5);
+      southWall.position.set(0, wallY, waterHalfLength + wallThickness * 0.5);
       const eastWall = new THREE.Mesh(sideWallGeometry, material);
-      eastWall.position.set(wallExtent + wallThickness * 0.5, wallY, 0);
+      eastWall.position.set(waterHalfWidth + wallThickness * 0.5, wallY, 0);
       const westWall = new THREE.Mesh(sideWallGeometry, material);
-      westWall.position.set(-wallExtent - wallThickness * 0.5, wallY, 0);
+      westWall.position.set(-waterHalfWidth - wallThickness * 0.5, wallY, 0);
 
       [northWall, southWall, eastWall, westWall].forEach((wall) => {
         wall.castShadow = true;
@@ -1037,7 +1050,7 @@ loadFile('shaders/utils.glsl').then((utils) => {
   class FloorShadowReceiver {
 
     constructor() {
-      const geometry = new THREE.PlaneBufferGeometry(waterExtent * 2, waterExtent * 2);
+      const geometry = new THREE.PlaneBufferGeometry(waterWidth, waterLength);
       const material = new THREE.ShadowMaterial({
         color: 0x061016,
         opacity: shadowStrength,
@@ -1097,8 +1110,8 @@ loadFile('shaders/utils.glsl').then((utils) => {
     }
 
     clampToPool() {
-      this.mesh.position.x = Math.min(vesselMovementBounds, Math.max(-vesselMovementBounds, this.mesh.position.x));
-      this.mesh.position.z = Math.min(vesselMovementBounds, Math.max(-vesselMovementBounds, this.mesh.position.z));
+      this.mesh.position.x = clampPoolX(this.mesh.position.x);
+      this.mesh.position.z = clampPoolZ(this.mesh.position.z);
       this.mesh.updateMatrixWorld();
     }
 
@@ -1162,8 +1175,8 @@ class FloatingSphere {
     }
 
     clampToPool() {
-      this.mesh.position.x = Math.min(vesselMovementBounds, Math.max(-vesselMovementBounds, this.mesh.position.x));
-      this.mesh.position.z = Math.min(vesselMovementBounds, Math.max(-vesselMovementBounds, this.mesh.position.z));
+      this.mesh.position.x = clampPoolX(this.mesh.position.x);
+      this.mesh.position.z = clampPoolZ(this.mesh.position.z);
       this.mesh.updateMatrixWorld();
     }
 
@@ -1518,8 +1531,8 @@ class FloatingSphere {
     }
 
     clampToPool() {
-      this.group.position.x = Math.min(vesselMovementBounds, Math.max(-vesselMovementBounds, this.group.position.x));
-      this.group.position.z = Math.min(vesselMovementBounds, Math.max(-vesselMovementBounds, this.group.position.z));
+      this.group.position.x = clampPoolX(this.group.position.x);
+      this.group.position.z = clampPoolZ(this.group.position.z);
       this.group.updateMatrixWorld();
     }
 
@@ -2363,16 +2376,17 @@ class FloatingSphere {
     const axisZ = sample.axisZ / axisLength;
     const halfLength = Math.max(0.002, sample.halfLength);
     const halfWidth = Math.max(0.002, sample.halfWidth);
-    const uvX = worldToWaterUv(sample.x);
-    const uvY = worldToWaterUv(sample.z);
+    const uvX = worldXToWaterUv(sample.x);
+    const uvY = worldZToWaterUv(sample.z);
     const centerX = uvX * (objectPressureFieldResolution - 1);
     const centerY = uvY * (objectPressureFieldResolution - 1);
     const radius = Math.sqrt(halfLength * halfLength + halfWidth * halfWidth);
     const radiusCells = Math.max(
       1,
-      Math.ceil(radius / (waterExtent * 2) * objectPressureFieldResolution)
+      Math.ceil(Math.max(radius / waterWidth, radius / waterLength) * objectPressureFieldResolution)
     );
-    const worldCellSize = (waterExtent * 2) / (objectPressureFieldResolution - 1);
+    const worldCellSizeX = waterWidth / (objectPressureFieldResolution - 1);
+    const worldCellSizeZ = waterLength / (objectPressureFieldResolution - 1);
     const minX = Math.max(0, Math.floor(centerX - radiusCells));
     const maxX = Math.min(objectPressureFieldResolution - 1, Math.ceil(centerX + radiusCells));
     const minY = Math.max(0, Math.floor(centerY - radiusCells));
@@ -2381,8 +2395,8 @@ class FloatingSphere {
 
     for (let y = minY; y <= maxY; y++) {
       for (let x = minX; x <= maxX; x++) {
-        const dx = (x - centerX) * worldCellSize;
-        const dz = (y - centerY) * worldCellSize;
+        const dx = (x - centerX) * worldCellSizeX;
+        const dz = (y - centerY) * worldCellSizeZ;
         const along = dx * axisX + dz * axisZ;
         const cross = dx * -axisZ + dz * axisX;
         const distance = Math.sqrt(
@@ -2392,8 +2406,8 @@ class FloatingSphere {
 
         if (distance > 1) continue;
 
-        const worldX = (x / (objectPressureFieldResolution - 1) - 0.5) * waterExtent * 2;
-        const worldZ = (y / (objectPressureFieldResolution - 1) - 0.5) * waterExtent * 2;
+        const worldX = (x / (objectPressureFieldResolution - 1) - 0.5) * waterWidth;
+        const worldZ = (y / (objectPressureFieldResolution - 1) - 0.5) * waterLength;
         const edgeFade = getWaterEdgeFade(worldX, worldZ);
         if (edgeFade <= 0) continue;
 
@@ -2485,10 +2499,10 @@ class FloatingSphere {
       objectWaterVertex.copy(sample.position).applyMatrix4(mesh.matrixWorld);
 
       if (
-        objectWaterVertex.x < -waterExtent ||
-        objectWaterVertex.x > waterExtent ||
-        objectWaterVertex.z < -waterExtent ||
-        objectWaterVertex.z > waterExtent
+        objectWaterVertex.x < -waterHalfWidth ||
+        objectWaterVertex.x > waterHalfWidth ||
+        objectWaterVertex.z < -waterHalfLength ||
+        objectWaterVertex.z > waterHalfLength
       ) {
         continue;
       }
@@ -2910,8 +2924,12 @@ class FloatingSphere {
     window.requestAnimationFrame(animate);
   }
 
-  function clampPoolCoordinate(value) {
-    return Math.min(waterExtent * 0.98, Math.max(-waterExtent * 0.98, value));
+  function clampPoolX(value) {
+    return Math.min(waterHalfWidth * 0.98, Math.max(-waterHalfWidth * 0.98, value));
+  }
+
+  function clampPoolZ(value) {
+    return Math.min(waterHalfLength * 0.98, Math.max(-waterHalfLength * 0.98, value));
   }
 
   function addWakeDrop(x, z, radius, strength) {
@@ -2920,9 +2938,9 @@ class FloatingSphere {
 
     waterSimulation.addDrop(
       renderer,
-      x / waterExtent,
-      z / waterExtent,
-      radius / waterExtent,
+      x / waterHalfWidth,
+      z / waterHalfLength,
+      radius,
       strength * objectWakeHeightScale * edgeFade
     );
   }

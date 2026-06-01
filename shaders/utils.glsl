@@ -5,12 +5,20 @@ const vec3 abovewaterColor = vec3(0.25, 1.0, 1.25);
 const vec3 underwaterColor = vec3(0.4, 0.9, 1.0);
 
 const float poolHeight = 1.0;
-const float poolHalfSize = 2.5;
 
 uniform vec3 light;
 uniform sampler2D tiles;
 uniform sampler2D causticTex;
 uniform sampler2D water;
+uniform vec2 poolHalfSize;
+
+vec3 getPoolMinBounds() {
+  return vec3(-poolHalfSize.x, -poolHeight, -poolHalfSize.y);
+}
+
+vec3 getPoolMaxBounds() {
+  return vec3(poolHalfSize.x, 2.0, poolHalfSize.y);
+}
 
 #ifdef USE_WAVE_CAUSTIC_WATER_LEVEL
 uniform float time;
@@ -147,11 +155,11 @@ vec3 getWallColor(vec3 point) {
 
   vec3 wallColor;
   vec3 normal;
-  if (abs(point.x) > poolHalfSize - 0.001) {
-    wallColor = texture2D(tiles, vec2(point.y * 0.5 + 1.0, point.z / (poolHalfSize * 2.0) + 0.5)).rgb;
+  if (abs(point.x) > poolHalfSize.x - 0.001) {
+    wallColor = texture2D(tiles, vec2(point.y * 0.5 + 1.0, point.z / (poolHalfSize.y * 2.0) + 0.5)).rgb;
     normal = vec3(-point.x, 0.0, 0.0);
-  } else if (abs(point.z) > poolHalfSize - 0.001) {
-    wallColor = texture2D(tiles, vec2(point.y * 0.5 + 1.0, point.x / (poolHalfSize * 2.0) + 0.5)).rgb;
+  } else if (abs(point.z) > poolHalfSize.y - 0.001) {
+    wallColor = texture2D(tiles, vec2(point.y * 0.5 + 1.0, point.x / (poolHalfSize.x * 2.0) + 0.5)).rgb;
     normal = vec3(0.0, 0.0, -point.z);
   } else {
     wallColor = texture2D(tiles, point.xz / (poolHalfSize * 2.0) + 0.5).rgb;
@@ -169,7 +177,7 @@ vec3 getWallColor(vec3 point) {
     scale += diffuse * caustic.r * 2.0 * caustic.g;
   } else {
     /* shadow for the rim of the pool */
-    vec2 t = intersectCube(point, refractedLight, vec3(-poolHalfSize, -poolHeight, -poolHalfSize), vec3(poolHalfSize, 2.0, poolHalfSize));
+    vec2 t = intersectCube(point, refractedLight, getPoolMinBounds(), getPoolMaxBounds());
     diffuse *= 1.0 / (1.0 + exp(-200.0 / (1.0 + 10.0 * (t.y - t.x)) * (point.y + refractedLight.y * t.y - 2.0 / 12.0)));
 
     scale += diffuse * 0.5;

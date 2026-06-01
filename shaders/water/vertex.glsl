@@ -10,7 +10,7 @@ uniform float oceanWaveSharpness;
 uniform float fftWavesEnabled;
 uniform float wakeWaveStrength;
 uniform float waterTextureEnabled;
-uniform float waterExtent;
+uniform vec2 waterSize;
 
 attribute vec3 position;
 
@@ -111,13 +111,13 @@ vec3 oceanDisplacement(vec2 point) {
 
 
 void main() {
-  waterUv = position.xy / (waterExtent * 2.0) + 0.5;
+  waterUv = position.xy / waterSize + 0.5;
   vec4 info = texture2D(water, waterUv);
   pos = position.xzy;
   vec3 ocean = oceanDisplacement(pos.xz);
   pos.xz += ocean.xz;
   pos.y += ocean.y + info.r * wakeWaveStrength * waterTextureEnabled;
-  waterWaveUv = pos.xz / (waterExtent * 2.0) + 0.5;
+  waterWaveUv = pos.xz / waterSize + 0.5;
   reflectionCoord = reflectionTextureMatrix * vec4(pos, 1.0);
 
   vec3 axis_x = vec3(modelViewMatrix[0].x, modelViewMatrix[0].y, modelViewMatrix[0].z);

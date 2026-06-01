@@ -5,7 +5,7 @@ varying vec3 oldPos;
 varying vec3 newPos;
 varying vec3 ray;
 attribute vec3 position;
-uniform float waterExtent;
+uniform vec2 waterSize;
 uniform float time;
 uniform float oceanWaveStrength;
 uniform float oceanWaveFrequency;
@@ -94,7 +94,7 @@ float oceanHeight(vec2 point) {
 }
 
 float isWaterBounce(vec2 point) {
-  vec2 uv = point / (waterExtent * 2.0) + 0.5;
+  vec2 uv = point / waterSize + 0.5;
   float blocked = 0.0;
 
   for (int i = 0; i < 16; i++) {
@@ -132,7 +132,7 @@ vec3 oceanNormal(vec2 point) {
 
 /* project the ray onto the plane */
 vec3 project(vec3 origin, vec3 ray, vec3 refractedLight) {
-  vec2 tcube = intersectCube(origin, ray, vec3(-poolHalfSize, -poolHeight, -poolHalfSize), vec3(poolHalfSize, 2.0, poolHalfSize));
+  vec2 tcube = intersectCube(origin, ray, getPoolMinBounds(), getPoolMaxBounds());
   origin += ray * tcube.y;
   float tplane = (-origin.y - 1.0) / refractedLight.y;
 
@@ -142,7 +142,7 @@ vec3 project(vec3 origin, vec3 ray, vec3 refractedLight) {
 
 void main() {
   vec2 waterPoint = position.xy;
-  vec4 info = texture2D(water, waterPoint / (waterExtent * 2.0) + 0.5);
+  vec4 info = texture2D(water, waterPoint / waterSize + 0.5);
   float waveCausticMask = waveCausticsEnabled * (1.0 - isWaterBounce(waterPoint));
   vec2 wakeSlope = info.ba * 0.5;
   vec3 wakeNormal = vec3(wakeSlope.x, sqrt(max(0.0, 1.0 - dot(wakeSlope, wakeSlope))), wakeSlope.y);

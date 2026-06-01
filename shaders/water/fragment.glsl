@@ -16,7 +16,7 @@ uniform float fftWavesEnabled;
 uniform float wakeWaveStrength;
 uniform float waterTextureEnabled;
 uniform float waterImageTextureEnabled;
-uniform float waterExtent;
+uniform vec2 waterSize;
 uniform float waterOpacity;
 uniform float waterTextureOpacity;
 uniform float waterTextureFrequency;
@@ -42,10 +42,10 @@ vec3 getSurfaceRayColor(vec3 origin, vec3 ray, vec3 waterColor) {
   vec3 color;
 
   if (ray.y < 0.0) {
-    vec2 t = intersectCube(origin, ray, vec3(-poolHalfSize, -poolHeight, -poolHalfSize), vec3(poolHalfSize, 2.0, poolHalfSize));
+    vec2 t = intersectCube(origin, ray, getPoolMinBounds(), getPoolMaxBounds());
     color = getWallColor(origin + ray * t.y);
   } else {
-    vec2 t = intersectCube(origin, ray, vec3(-poolHalfSize, -poolHeight, -poolHalfSize), vec3(poolHalfSize, 2.0, poolHalfSize));
+    vec2 t = intersectCube(origin, ray, getPoolMinBounds(), getPoolMaxBounds());
     vec3 hit = origin + ray * t.y;
     if (hit.y < 7.0 / 12.0) {
       color = getWallColor(hit);
@@ -258,7 +258,7 @@ vec2 waveLockedTextureCoord(float textureScale, vec2 wakeSlope, float surfaceSlo
 
 
 void main() {
-  vec2 coord = pos.xz / (waterExtent * 2.0) + 0.5;
+  vec2 coord = pos.xz / waterSize + 0.5;
   vec2 foamCoord = coord;
   vec4 info = texture2D(water, coord);
   vec4 heightInfo = info;
