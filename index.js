@@ -2693,45 +2693,44 @@ class FloatingSphere {
       );
     }
 
-    for (const sideSign of [-1, 1]) {
-      const shoulder = sideSign < 0 ? leftLeading : rightLeading;
-      const shoulderAlong = shoulder ? shoulder.along : contacts.maxAlong - effectiveLength * 0.08;
-      const shoulderSide = shoulder ? shoulder.side : centerSide + effectiveBeam * 0.46 * sideSign;
-      const sideRail = wakeAxesToWorld(
-        shoulderAlong - effectiveLength * 0.08,
-        shoulderSide,
-        directionX,
-        directionZ,
-        sideX,
-        sideZ
-      );
+    if (!isHullWake) {
+      for (const sideSign of [-1, 1]) {
+        const shoulder = sideSign < 0 ? leftLeading : rightLeading;
+        const shoulderAlong = shoulder ? shoulder.along : contacts.maxAlong - effectiveLength * 0.08;
+        const shoulderSide = shoulder ? shoulder.side : centerSide + effectiveBeam * 0.46 * sideSign;
+        const sideRail = wakeAxesToWorld(
+          shoulderAlong - effectiveLength * 0.08,
+          shoulderSide,
+          directionX,
+          directionZ,
+          sideX,
+          sideZ
+        );
 
-      addObjectPressureSegment(
-        sideRail.x,
-        sideRail.z,
-        trailX,
-        trailZ,
-        Math.max(effectiveLength * (isHullWake ? 0.82 : 0.42), effectiveBeam * (isHullWake ? 1.8 : 0.85)),
-        Math.max(
-          0.012,
-          Math.min(isHullWake ? 0.052 : 0.045, effectiveBeam * (isHullWake ? 0.095 : 0.18))
-        ) * interaction.radiusScale,
-        leadingStrength * (isHullWake ? 0.46 : 0.22),
-        leadingStrength * (isHullWake ? 0.28 : 0.16),
-        0.32
-      );
-      if (isHullWake || speedAmount > 0.35) {
-        addObjectDivergentPressure(
-          shoulder || sideRail,
+        addObjectPressureSegment(
+          sideRail.x,
+          sideRail.z,
           trailX,
           trailZ,
-          sideX,
-          sideZ,
-          sideSign,
-          divergentLength * (isHullWake ? 0.92 : 0.55),
-          divergentWidth,
-          divergentStrength * (shoulder ? shoulder.immersion : 0.65) * (isHullWake ? 1.15 : 0.65)
+          Math.max(effectiveLength * 0.42, effectiveBeam * 0.85),
+          Math.max(0.012, Math.min(0.045, effectiveBeam * 0.18)) * interaction.radiusScale,
+          leadingStrength * 0.22,
+          leadingStrength * 0.16,
+          0.32
         );
+        if (speedAmount > 0.35) {
+          addObjectDivergentPressure(
+            shoulder || sideRail,
+            trailX,
+            trailZ,
+            sideX,
+            sideZ,
+            sideSign,
+            divergentLength * 0.55,
+            divergentWidth,
+            divergentStrength * (shoulder ? shoulder.immersion : 0.65) * 0.65
+          );
+        }
       }
     }
 
