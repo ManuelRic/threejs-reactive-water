@@ -64,7 +64,12 @@ const waterSize = new THREE.Vector2(waterWidth, waterLength);
 const waterHalfSize = new THREE.Vector2(waterHalfWidth, waterHalfLength);
 const vesselMovementBounds = Math.min(waterHalfWidth, waterHalfLength) * 0.98;
 const maxWaterBounceObjects = 16;
-const objectPressureFieldResolution = 96;
+const maxWaterHullMasks = 8;
+const waterSimulationResolution = 512;
+const waterRenderSegmentsPerUnit = 80;
+const waterRenderSegmentsX = Math.max(320, Math.round(waterWidth * waterRenderSegmentsPerUnit));
+const waterRenderSegmentsZ = Math.max(320, Math.round(waterLength * waterRenderSegmentsPerUnit));
+const objectPressureFieldResolution = 256;
 
 // Lower values make wake waves fade sooner. Higher values let them travel farther.
 let rippleDistance = Number(rippleLengthSlider.value);
@@ -74,7 +79,7 @@ let shadowStrength = Number(shadowStrengthSlider.value);
 let waterTextureOpacity = Number(waterTextureOpacitySlider.value);
 let waterTextureFrequency = Number(waterTextureFrequencySlider.value);
 const wakeHeightRecovery = 0.992;
-const maxWakeHeight = 5;
+const maxWakeHeight = 0.18;
 let oceanWaveStrength = Number(waveAmplitudeSlider.value);
 let oceanWaveFrequency = Number(waveFrequencySlider.value);
 let oceanWaveSpeed = Number(waveSpeedSlider.value);
@@ -100,27 +105,38 @@ let fftWavesEnabled = 1;
 let waveGeneratorEnabled = false;
 let wallsEnabled = false;
 const extraFoamRippleBoost = 0;
-const wakeDropCount = 5;
-const wakeTrailSpacing = 0.055;
-const wakeSpread = 0.72;
-const wakeStrength = 0.018;
-const wakeTroughStrength = -0.014;
-const wakeMinMovement = 0.006;
-const objectWaterSampleLimit = 900;
+const objectWaterSampleLimit = 1600;
 const objectWaterContactPadding = 0.065;
 const objectWaterMaxDepth = 0.32;
-const objectWaterSideBins = 11;
 const objectWaterVelocityResponse = 18.0;
 const objectWaterVelocityDecay = 4.0;
 const objectWaterMinVelocity = 0.002;
 const objectWaterPressureLimit = 0.16;
 const objectWaterImpulseLimit = 0.075;
-const objectWaterLeadingStrength = 0.082;
-const objectWaterTrailStrength = 0.064;
-const objectWaterDivergentStrength = 0.052;
+const objectWaterSegmentMaxLength = 1.8;
+const objectWaterSegmentMaxWidth = 0.42;
+const objectWaterBowPressureStrength = 0.095;
+const objectWaterSidePressureStrength = 0.064;
+const objectWaterSternSuctionStrength = 0.078;
+const objectWaterPropWashStrength = 0.092;
+const objectWaterDivergentStrength = 0.086;
 const objectWaterKelvinAngle = 19.5 * Math.PI / 180;
 const objectWaterFullWakeVelocity = 0.32;
 const objectWaterEdgeFadeDistance = 0.24;
+const wakeHistoryLifetime = 7.5;
+const wakeHistoryMaxPoints = 90;
+const wakeHistoryMinSampleDistance = 0.018;
+const wakeHistoryFoamStrength = 0.058;
+const wakeHistoryKelvinStrength = 0.036;
+const wakeHistoryCentralStrength = 0.048;
+const wakeTurnSensitivity = 5.4;
+const wakeEmitterSternCenter = 'stern-center';
+const wakeEmitterBowLeft = 'bow-left';
+const wakeEmitterBowRight = 'bow-right';
+const visualWakeMaxPoints = 96;
+const visualWakeLifetime = 9.0;
+const visualWakeMinSpeed = 0.035;
+const visualWakeMinSampleDistance = 0.016;
 const waveEmitterTypeLine = 'line';
 const waveEmitterTypePoint = 'point';
 const waveEmitters = [
@@ -140,26 +156,9 @@ const waveEmitters = [
   },
 ];
 const primaryWaveEmitter = waveEmitters[0];
-const shipTrackWakeCount = 8;
-const shipTrackWakeSpacing = 0.06;
-const shipTrackWakeStrength = 0.018;
-const shipTurnWakeStrength = 0.035;
-const shipTurnWakeSensitivity = 5.5;
-const shipWakeTrailHistoryLimit = 48;
-const shipWakeTrailMinSampleDistance = 0.012;
 const shipWakeBowOffset = 0.3;
 const shipWakeSternOffset = 0.28;
 const shipWakeBeam = 0.18;
-const shipWakeHullSamples = 4;
-const normalShipWakeMinVisibleSpeed = 0.28;
-const extraFoamShipWakeMinVisibleSpeed = 0.42;
-let shipWakeMinVisibleSpeed = normalShipWakeMinVisibleSpeed;
-const shipWakeGeometrySideBins = 11;
-const shipWakeGeometryLengthBins = 6;
-const shipWakePressureStrength = -0.010;
-const shipWakeEmitterStrength = 0.010;
-const shipWakeReferenceLength = shipWakeBowOffset + shipWakeSternOffset;
-const shipWakeReferenceBeam = shipWakeBeam;
 const shipModelYawOffset = 2*Math.PI;
 const shipMovementYawOffset = Math.PI / 2;
 const shipAutopilotSpeed = 0.18;
@@ -298,7 +297,10 @@ loadFile('shaders/utils.glsl').then((utils) => {
   const objectScene = new THREE.Scene();
   const waterBounceBounds = new THREE.Box3();
   const waterBounceRectValues = Array.from({ length: maxWaterBounceObjects }, () => new THREE.Vector4());
+  const waterHullMaskValues = Array.from({ length: maxWaterHullMasks }, () => new THREE.Vector4());
+  const waterHullMaskSizes = Array.from({ length: maxWaterHullMasks }, () => new THREE.Vector4());
   let waterBounceRectCount = 0;
+  let waterHullMaskCount = 0;
   const objectPressureFieldData = new Float32Array(objectPressureFieldResolution * objectPressureFieldResolution * 4);
   const objectPressureTexture = new THREE.DataTexture(
     objectPressureFieldData,
@@ -315,9 +317,40 @@ loadFile('shaders/utils.glsl').then((utils) => {
   const objectWaterPosition = new THREE.Vector3();
   const objectWaterPreviousPosition = new THREE.Vector3();
   const objectWaterSamples = [];
+  const visualWakePoints = [];
+  const visualWakePoint0 = Array.from({ length: visualWakeMaxPoints }, () => new THREE.Vector4());
+  const visualWakePoint1 = Array.from({ length: visualWakeMaxPoints }, () => new THREE.Vector4());
+  const visualWakeHullSize = new THREE.Vector4(shipWakeBowOffset, shipWakeSternOffset, shipWakeBeam, visualWakeLifetime);
+  const visualWakePreviousPosition = new THREE.Vector3();
+  let visualWakePreviousDirection = null;
+  let visualWakeInitialized = false;
+  let visualWakeCount = 0;
 
   function registerWaterBounceObject(object) {
     object.userData.waterBounce = true;
+  }
+
+  function registerWaterHullMask(object, options = {}) {
+    object.userData.waterHullMask = {
+      bow: options.bow || shipWakeBowOffset,
+      stern: options.stern || shipWakeSternOffset,
+      beam: options.beam || shipWakeBeam,
+      headingYawOffset: options.headingYawOffset || 0,
+      beamScale: options.beamScale || 0.62,
+      padding: options.padding || 0.004,
+      softness: options.softness || 0.008,
+    };
+  }
+
+  function isVisibleInHierarchy(object) {
+    let current = object;
+
+    while (current) {
+      if (!current.visible) return false;
+      current = current.parent;
+    }
+
+    return true;
   }
 
   function rebuildObjectWaterSamples(interaction) {
@@ -354,12 +387,18 @@ loadFile('shaders/utils.glsl').then((utils) => {
       velocityX: 0,
       velocityZ: 0,
       sampleLimit: options.sampleLimit || objectWaterSampleLimit,
-      strengthScale: options.strengthScale || 1,
-      radiusScale: options.radiusScale || 1,
+      strengthScale: options.strengthScale === undefined ? 1 : options.strengthScale,
+      radiusScale: options.radiusScale === undefined ? 1 : options.radiusScale,
       maxWakeLength: options.maxWakeLength || null,
       maxWakeBeam: options.maxWakeBeam || null,
       headingYawOffset: options.headingYawOffset || 0,
       wakeShape: options.wakeShape || 'blunt',
+      hasWakeDirection: false,
+      wakeDirectionX: 0,
+      wakeDirectionZ: 1,
+      wakeTurnAmount: 0,
+      wakeHistory: [],
+      lastWakeHistoryByType: {},
       samples: [],
     };
 
@@ -383,9 +422,36 @@ loadFile('shaders/utils.glsl').then((utils) => {
 
   function updateWaterBounceRects() {
     let count = 0;
+    let hullCount = 0;
 
     objectScene.traverse((object) => {
-      if (!object.userData.waterBounce || !object.visible || count >= maxWaterBounceObjects) return;
+      if (object.userData.waterHullMask && isVisibleInHierarchy(object) && hullCount < maxWaterHullMasks) {
+        const mask = object.userData.waterHullMask;
+        object.getWorldPosition(objectWaterPosition);
+
+        const heading = object.rotation.y - mask.headingYawOffset;
+        const directionX = Math.sin(heading);
+        const directionZ = Math.cos(heading);
+        const bow = Math.max(0.001, mask.bow + mask.padding);
+        const stern = Math.max(0.001, mask.stern + mask.padding);
+        const halfBeam = Math.max(0.001, mask.beam * 0.5 * mask.beamScale + mask.padding);
+
+        waterHullMaskValues[hullCount].set(
+          objectWaterPosition.x,
+          objectWaterPosition.z,
+          directionX,
+          directionZ
+        );
+        waterHullMaskSizes[hullCount].set(
+          bow,
+          stern,
+          halfBeam,
+          Math.max(0.001, mask.softness)
+        );
+        hullCount++;
+      }
+
+      if (!object.userData.waterBounce || !isVisibleInHierarchy(object) || count >= maxWaterBounceObjects) return;
 
       waterBounceBounds.setFromObject(object);
       const minX = Math.max(-waterHalfWidth, waterBounceBounds.min.x);
@@ -405,15 +471,22 @@ loadFile('shaders/utils.glsl').then((utils) => {
     });
 
     waterBounceRectCount = count;
+    waterHullMaskCount = hullCount;
 
     if (waterSimulation && waterSimulation._updateMesh) {
       waterSimulation._updateMesh.material.uniforms['waterBounceCount'].value = count;
       waterSimulation._updateMesh.material.uniforms['waterBounceRects'].value = waterBounceRectValues;
+      waterSimulation._updateMesh.material.uniforms['waterHullMaskCount'].value = hullCount;
+      waterSimulation._updateMesh.material.uniforms['waterHullMaskValues'].value = waterHullMaskValues;
+      waterSimulation._updateMesh.material.uniforms['waterHullMaskSizes'].value = waterHullMaskSizes;
     }
 
     if (waterSimulation && waterSimulation._normalMesh) {
       waterSimulation._normalMesh.material.uniforms['waterBounceCount'].value = count;
       waterSimulation._normalMesh.material.uniforms['waterBounceRects'].value = waterBounceRectValues;
+      waterSimulation._normalMesh.material.uniforms['waterHullMaskCount'].value = hullCount;
+      waterSimulation._normalMesh.material.uniforms['waterHullMaskValues'].value = waterHullMaskValues;
+      waterSimulation._normalMesh.material.uniforms['waterHullMaskSizes'].value = waterHullMaskSizes;
     }
   }
 
@@ -601,36 +674,28 @@ loadFile('shaders/utils.glsl').then((utils) => {
 
       this._geometry = new THREE.PlaneBufferGeometry(2, 2);
 
-      this._textureA = new THREE.WebGLRenderTarget(256, 256, {type: THREE.FloatType});
-      this._textureB = new THREE.WebGLRenderTarget(256, 256, {type: THREE.FloatType});
+      this._textureA = new THREE.WebGLRenderTarget(waterSimulationResolution, waterSimulationResolution, {type: THREE.FloatType});
+      this._textureB = new THREE.WebGLRenderTarget(waterSimulationResolution, waterSimulationResolution, {type: THREE.FloatType});
       this.texture = this._textureA;
 
       const shadersPromises = [
         loadFile('shaders/simulation/vertex.glsl'),
-        loadFile('shaders/simulation/drop_fragment.glsl'),
         loadFile('shaders/simulation/normal_fragment.glsl'),
         loadFile('shaders/simulation/update_fragment.glsl'),
       ];
 
       this.loaded = Promise.all(shadersPromises)
-          .then(([vertexShader, dropFragmentShader, normalFragmentShader, updateFragmentShader]) => {
-        const dropMaterial = new THREE.RawShaderMaterial({
-          uniforms: {
-              center: { value: [0, 0] },
-              radius: { value: 0 },
-              strength: { value: 0 },
-              waterSize: { value: waterSize },
-              texture: { value: null },
-          },
-          vertexShader: vertexShader,
-          fragmentShader: dropFragmentShader,
-        });
-
+          .then(([vertexShader, normalFragmentShader, updateFragmentShader]) => {
         const normalMaterial = new THREE.RawShaderMaterial({
           uniforms: {
-              delta: { value: [1 / 256, 1 / 256] },
+              delta: { value: [1 / waterSimulationResolution, 1 / waterSimulationResolution] },
+              waterTexelSize: { value: [waterWidth / waterSimulationResolution, waterLength / waterSimulationResolution] },
+              waterSize: { value: waterSize },
               waterBounceCount: { value: 0 },
               waterBounceRects: { value: waterBounceRectValues },
+              waterHullMaskCount: { value: 0 },
+              waterHullMaskValues: { value: waterHullMaskValues },
+              waterHullMaskSizes: { value: waterHullMaskSizes },
               texture: { value: null },
           },
           vertexShader: vertexShader,
@@ -639,12 +704,16 @@ loadFile('shaders/utils.glsl').then((utils) => {
 
         const updateMaterial = new THREE.RawShaderMaterial({
           uniforms: {
-              delta: { value: [1 / 256, 1 / 256] },
+              delta: { value: [1 / waterSimulationResolution, 1 / waterSimulationResolution] },
               rippleDistance: { value: rippleDistance },
               wakeHeightRecovery: { value: wakeHeightRecovery },
               maxWakeHeight: { value: maxWakeHeight },
+              waterSize: { value: waterSize },
               waterBounceCount: { value: 0 },
               waterBounceRects: { value: waterBounceRectValues },
+              waterHullMaskCount: { value: 0 },
+              waterHullMaskValues: { value: waterHullMaskValues },
+              waterHullMaskSizes: { value: waterHullMaskSizes },
               objectPressureTexture: { value: objectPressureTexture },
               texture: { value: null },
           },
@@ -652,19 +721,9 @@ loadFile('shaders/utils.glsl').then((utils) => {
           fragmentShader: updateFragmentShader,
         });
 
-        this._dropMesh = new THREE.Mesh(this._geometry, dropMaterial);
         this._normalMesh = new THREE.Mesh(this._geometry, normalMaterial);
         this._updateMesh = new THREE.Mesh(this._geometry, updateMaterial);
       });
-    }
-
-    // Add a drop of water at the (x, y) coordinate (in the range [-1, 1])
-    addDrop(renderer, x, y, radius, strength) {
-      this._dropMesh.material.uniforms['center'].value = [x, y];
-      this._dropMesh.material.uniforms['radius'].value = radius;
-      this._dropMesh.material.uniforms['strength'].value = strength;
-
-      this._render(renderer, this._dropMesh);
     }
 
     stepSimulation(renderer) {
@@ -678,8 +737,9 @@ loadFile('shaders/utils.glsl').then((utils) => {
 
     getHeightAt(renderer, x, z) {
       const pixel = new Float32Array(4);
-      const px = Math.min(255, Math.max(0, Math.floor((x / waterWidth + 0.5) * 256)));
-      const py = Math.min(255, Math.max(0, Math.floor((z / waterLength + 0.5) * 256)));
+      const maxPixel = waterSimulationResolution - 1;
+      const px = Math.min(maxPixel, Math.max(0, Math.floor((x / waterWidth + 0.5) * waterSimulationResolution)));
+      const py = Math.min(maxPixel, Math.max(0, Math.floor((z / waterLength + 0.5) * waterSimulationResolution)));
 
       try {
         renderer.readRenderTargetPixels(this.texture, px, py, 1, 1, pixel);
@@ -773,7 +833,7 @@ loadFile('shaders/utils.glsl').then((utils) => {
   class Water {
 
     constructor() {
-      this.geometry = new THREE.PlaneBufferGeometry(waterWidth, waterLength, 280, 280);
+      this.geometry = new THREE.PlaneBufferGeometry(waterWidth, waterLength, waterRenderSegmentsX, waterRenderSegmentsZ);
 
       const shadersPromises = [
         loadFile('shaders/water/vertex.glsl'),
@@ -807,6 +867,16 @@ loadFile('shaders/utils.glsl').then((utils) => {
               waterTextureEnabled: { value: waterTextureEnabled },
               waterImageTextureEnabled: { value: waterImageTextureEnabled },
               waterSize: { value: waterSize },
+              waterTexel: { value: 1 / waterSimulationResolution },
+              waterBounceCount: { value: 0 },
+              waterBounceRects: { value: waterBounceRectValues },
+              waterHullMaskCount: { value: 0 },
+              waterHullMaskValues: { value: waterHullMaskValues },
+              waterHullMaskSizes: { value: waterHullMaskSizes },
+              visualWakeCount: { value: 0 },
+              visualWakePoint0: { value: visualWakePoint0 },
+              visualWakePoint1: { value: visualWakePoint1 },
+              visualWakeHullSize: { value: visualWakeHullSize },
               foamHeightThreshold: { value: foamHeightThreshold },
               foamHeightSoftness: { value: foamHeightSoftness },
               foamFromHeightStrength: { value: foamFromHeightStrength },
@@ -832,6 +902,12 @@ loadFile('shaders/utils.glsl').then((utils) => {
       this.material.uniforms['water'].value = waterTexture;
       this.material.uniforms['causticTex'].value = causticsTexture;
       this.material.uniforms['time'].value = time;
+      this.material.uniforms['waterBounceCount'].value = waterBounceRectCount;
+      this.material.uniforms['waterBounceRects'].value = waterBounceRectValues;
+      this.material.uniforms['waterHullMaskCount'].value = waterHullMaskCount;
+      this.material.uniforms['waterHullMaskValues'].value = waterHullMaskValues;
+      this.material.uniforms['waterHullMaskSizes'].value = waterHullMaskSizes;
+      updateVisualWakeUniforms(this.material);
 
       this.material.side = THREE.FrontSide;
       this.material.uniforms['underwater'].value = true;
@@ -1095,7 +1171,7 @@ loadFile('shaders/utils.glsl').then((utils) => {
       objectScene.add(this.mesh);
       registerWaterBounceObject(this.mesh);
       registerObjectWaterInteraction(this.mesh, {
-        sampleLimit: 360,
+        sampleLimit: 640,
         radiusScale: 1.05,
         strengthScale: 0.82,
         maxWakeLength: this.size,
@@ -1156,7 +1232,7 @@ class FloatingSphere {
       this.mesh.position.set(-0.5, this.radius * 0.25, 0.3);
       objectScene.add(this.mesh);
       registerObjectWaterInteraction(this.mesh, {
-        sampleLimit: 420,
+        sampleLimit: 900,
         radiusScale: 1.25,
         strengthScale: 0.78,
         maxWakeLength: this.radius * 2,
@@ -1231,7 +1307,7 @@ class FloatingSphere {
     constructor() {
       this.visible = true;
       this.waterLevel = 0;
-      this.draft = 0.035;
+      this.draft = 0.008;
       this.buoyancy = Number(shipBuoyancySlider.value);
       this.floatY = 0;
       this.needsFloatReset = true;
@@ -1239,16 +1315,13 @@ class FloatingSphere {
       this.previousUpdateTime = null;
       this.wavePitch = 0;
       this.waveRoll = 0;
-      this.wakeEmitters = [];
       this.wakeDirection = null;
       this.wakeTurnAmount = 0;
-      this.wakeTrailHistory = [];
       this.wakeExtents = {
         bow: shipWakeBowOffset,
         stern: shipWakeSternOffset,
         beam: shipWakeBeam,
       };
-      this.wakeProfile = this.createWakeProfile(this.wakeExtents);
       this.group = new THREE.Group();
       this.modelRoot = new THREE.Group();
       this.group.add(this.modelRoot);
@@ -1267,6 +1340,12 @@ class FloatingSphere {
       this.group.add(this.dragTarget);
 
       objectScene.add(this.group);
+      registerWaterHullMask(this.group, {
+        bow: this.wakeExtents.bow,
+        stern: this.wakeExtents.stern,
+        beam: this.wakeExtents.beam,
+        headingYawOffset: shipMovementYawOffset,
+      });
 
       this.loaded = new Promise((resolve) => {
         if (!THREE.GLTFLoader) {
@@ -1295,6 +1374,12 @@ class FloatingSphere {
           model.updateMatrixWorld(true);
           this.group.updateMatrixWorld(true);
           this.buildWakeEmitters(model);
+          registerWaterHullMask(this.group, {
+            bow: this.wakeExtents.bow,
+            stern: this.wakeExtents.stern,
+            beam: this.wakeExtents.beam,
+            headingYawOffset: shipMovementYawOffset,
+          });
           this.resizeDragTarget();
 
           model.traverse((child) => {
@@ -1304,16 +1389,6 @@ class FloatingSphere {
               addUnderwaterCaustics(child.material, { tintSubmerged: true });
             }
           });
-          registerObjectWaterInteraction(this.group, {
-            sampleLimit: 1200,
-            radiusScale: 1.15,
-            strengthScale: 1.25,
-            maxWakeLength: this.wakeExtents.bow + this.wakeExtents.stern,
-            maxWakeBeam: this.wakeExtents.beam,
-            headingYawOffset: shipMovementYawOffset,
-            wakeShape: 'hull',
-          });
-
           this.update(0, 0);
           this.requestFloatReset();
           resolve();
@@ -1343,30 +1418,6 @@ class FloatingSphere {
         1,
         Math.max(0.35, (this.wakeExtents.bow + this.wakeExtents.stern) * 1.25)
       );
-    }
-
-    createWakeProfile(extents) {
-      const length = Math.max(0.001, extents.bow + extents.stern);
-      const beam = Math.max(0.001, extents.beam);
-      const lengthScale = Math.max(0.35, Math.min(2.6, length / shipWakeReferenceLength));
-      const beamScale = Math.max(0.35, Math.min(2.6, beam / shipWakeReferenceBeam));
-      const sizeScale = Math.sqrt(lengthScale * beamScale);
-
-      return {
-        length,
-        beam,
-        sizeScale,
-        hullSamples: Math.max(3, Math.min(9, Math.round(shipWakeHullSamples * lengthScale))),
-        trackWakeCount: Math.max(4, Math.min(14, Math.round(shipTrackWakeCount * lengthScale))),
-        kelvinWakeCount: Math.max(3, Math.min(12, Math.round(wakeDropCount * lengthScale))),
-        trackWakeSpacing: shipTrackWakeSpacing * Math.max(0.45, Math.min(2.1, lengthScale)),
-        kelvinWakeSpacing: wakeTrailSpacing * Math.max(0.45, Math.min(2.1, lengthScale)),
-        trackSideOffset: Math.max(beam * 0.32, 0.045 * beamScale),
-        baseTrackRadius: Math.max(0.014, Math.min(0.065, beam * 0.14)),
-        baseTurnRadius: Math.max(0.018, Math.min(0.085, beam * 0.18)),
-        bowRadius: Math.max(0.014, Math.min(0.06, beam * 0.12)),
-        sternRadius: Math.max(0.018, Math.min(0.08, beam * 0.18)),
-      };
     }
 
     collectFootprintPoints(model) {
@@ -1433,101 +1484,14 @@ class FloatingSphere {
       const forwardMax = Math.max(...forwardValues);
       const sideMin = Math.min(...sideValues);
       const sideMax = Math.max(...sideValues);
-      const forwardLength = Math.max(0.001, forwardMax - forwardMin);
       const beam = Math.max(0.001, sideMax - sideMin);
-      const bowEmitters = [];
-      const sideEmitters = [];
-
-      for (let i = 0; i < shipWakeGeometrySideBins; i++) {
-        const binMin = sideMin + beam * i / shipWakeGeometrySideBins;
-        const binMax = sideMin + beam * (i + 1) / shipWakeGeometrySideBins;
-        let bestPoint = null;
-        let bestForward = -Infinity;
-
-        for (const point of usablePoints) {
-          const side = point[sideAxis];
-          const forward = point[forwardAxis];
-
-          if (side < binMin || side > binMax || forward < forwardMin + forwardLength * 0.35) continue;
-
-          if (forward > bestForward) {
-            bestForward = forward;
-            bestPoint = point;
-          }
-        }
-
-        if (!bestPoint) continue;
-
-        bowEmitters.push({
-          forward: bestPoint[forwardAxis],
-          side: bestPoint[sideAxis],
-        });
-      }
-
-      for (let i = 0; i < shipWakeGeometryLengthBins; i++) {
-        const binMin = forwardMin + forwardLength * i / shipWakeGeometryLengthBins;
-        const binMax = forwardMin + forwardLength * (i + 1) / shipWakeGeometryLengthBins;
-        let leftPoint = null;
-        let rightPoint = null;
-        let leftSide = Infinity;
-        let rightSide = -Infinity;
-
-        for (const point of usablePoints) {
-          const forward = point[forwardAxis];
-          const side = point[sideAxis];
-
-          if (forward < binMin || forward > binMax) continue;
-
-          if (side < leftSide) {
-            leftSide = side;
-            leftPoint = point;
-          }
-
-          if (side > rightSide) {
-            rightSide = side;
-            rightPoint = point;
-          }
-        }
-
-        if (leftPoint) {
-          sideEmitters.push({
-            forward: leftPoint[forwardAxis],
-            side: leftPoint[sideAxis],
-          });
-        }
-
-        if (rightPoint && rightPoint !== leftPoint) {
-          sideEmitters.push({
-            forward: rightPoint[forwardAxis],
-            side: rightPoint[sideAxis],
-          });
-        }
-      }
-
       const centerForward = (forwardMin + forwardMax) * 0.5;
-      const centerSide = (sideMin + sideMax) * 0.5;
 
       this.wakeExtents = {
         bow: Math.max(shipWakeBowOffset * 0.5, forwardMax - centerForward),
         stern: Math.max(shipWakeSternOffset * 0.5, centerForward - forwardMin),
         beam: Math.max(shipWakeBeam * 0.5, beam),
       };
-      this.wakeProfile = this.createWakeProfile(this.wakeExtents);
-
-      this.wakeEmitters = [
-        ...bowEmitters.map((point) => ({
-          forward: point.forward - centerForward,
-          side: point.side - centerSide,
-          radius: Math.max(0.018, this.wakeProfile.bowRadius * 0.75),
-          strength: shipWakeEmitterStrength,
-        })),
-        ...sideEmitters.map((point) => ({
-          forward: point.forward - centerForward,
-          side: point.side - centerSide,
-          radius: Math.max(0.015, this.wakeProfile.bowRadius * 0.58),
-          strength: shipWakeEmitterStrength * 0.55,
-        })),
-      ];
     }
 
     clampToPool() {
@@ -1536,13 +1500,9 @@ class FloatingSphere {
       this.group.updateMatrixWorld();
     }
 
-    moveToWaterPoint(point, wakeSpeedOverride = null) {
-      const previousPoint = {
-        x: this.group.position.x,
-        z: this.group.position.z,
-      };
-      const dx = point.x - previousPoint.x;
-      const dz = point.z - previousPoint.z;
+    moveToWaterPoint(point) {
+      const dx = point.x - this.group.position.x;
+      const dz = point.z - this.group.position.z;
 
       if (Math.sqrt(dx * dx + dz * dz) > 0.001) {
         this.targetYaw = Math.atan2(dx, dz) + shipMovementYawOffset;
@@ -1551,8 +1511,6 @@ class FloatingSphere {
       this.group.position.x = point.x;
       this.group.position.z = point.z;
       this.clampToPool();
-
-      emitCargoShipMovementWake(previousPoint, getVesselPoint(this), wakeSpeedOverride);
     }
 
     update(waterSamples, time) {
@@ -1645,7 +1603,6 @@ class FloatingSphere {
   const cargoShip = new CargoShip();
   boundaryWalls.setVisible(wallsEnabled);
   floatingSphere.setVisible(false);
-  let lastWakePoint = null;
   let shipMovementMode = shipMovementModeRandom;
   let shipAutoTarget = null;
   let shipAutoLastTime = null;
@@ -1653,7 +1610,6 @@ class FloatingSphere {
   let shipAutoTurnBias = 0;
   let shipAutoTargetTurnBias = 0;
   let shipAutoTravelAngle = null;
-  let shipAutoLastWakePoint = null;
   let shipCircleAngle = null;
   let simulationTime = 0;
   let previousFrameTime = null;
@@ -1925,7 +1881,6 @@ class FloatingSphere {
     if (!floatingSphere.visible && draggedVessel === floatingSphere) {
       draggedVessel = null;
       draggedVesselOffset = { x: 0, z: 0 };
-      lastWakePoint = null;
     }
     setToggleButtonState(toggleSphereButton, floatingSphere.visible);
   });
@@ -1935,7 +1890,6 @@ class FloatingSphere {
     if (!cargoShip.visible && draggedVessel === cargoShip) {
       draggedVessel = null;
       draggedVesselOffset = { x: 0, z: 0 };
-      lastWakePoint = null;
     }
     setToggleButtonState(toggleShipButton, cargoShip.visible);
   });
@@ -1945,7 +1899,6 @@ class FloatingSphere {
     if (!floatingSquare.visible && draggedVessel === floatingSquare) {
       draggedVessel = null;
       draggedVesselOffset = { x: 0, z: 0 };
-      lastWakePoint = null;
     }
     setToggleButtonState(toggleSquareButton, floatingSquare.visible);
   });
@@ -2095,24 +2048,9 @@ class FloatingSphere {
   function resetShipWakeDirection() {
     cargoShip.wakeDirection = null;
     cargoShip.wakeTurnAmount = 0;
-    cargoShip.wakeTrailHistory.length = 0;
-  }
-
-  function emitCargoShipMovementWake(fromPoint, toPoint, wakeSpeedOverride = null) {
-    if (!cargoShip.visible) return;
-
-    if (!shipAutoLastWakePoint) {
-      shipAutoLastWakePoint = { x: fromPoint.x, z: fromPoint.z };
-    }
-
-    const wakeFromPoint = shipAutoLastWakePoint;
-    const wakeDx = toPoint.x - wakeFromPoint.x;
-    const wakeDz = toPoint.z - wakeFromPoint.z;
-
-    if (Math.sqrt(wakeDx * wakeDx + wakeDz * wakeDz) >= wakeMinMovement) {
-      addMovementWake(cargoShip, wakeFromPoint, toPoint, wakeSpeedOverride);
-      shipAutoLastWakePoint = { x: toPoint.x, z: toPoint.z };
-    }
+    visualWakePreviousDirection = null;
+    visualWakePreviousPosition.copy(cargoShip.group.position);
+    visualWakeInitialized = false;
   }
 
   function resetShipAutopilotState() {
@@ -2122,13 +2060,8 @@ class FloatingSphere {
     shipAutoTurnBias = 0;
     shipAutoTargetTurnBias = 0;
     shipAutoTravelAngle = null;
-    shipAutoLastWakePoint = null;
     shipCircleAngle = null;
     resetShipWakeDirection();
-  }
-
-  function getShipMovementSpeedAmount(step, deltaTime) {
-    return deltaTime > 0 ? clamp((step / deltaTime) / 0.35, 0, 1) : 0;
   }
 
   function updateShipRandomMovement(time, deltaTime) {
@@ -2145,7 +2078,6 @@ class FloatingSphere {
     if (distance < shipAutopilotTargetRadius) {
       shipAutoTarget = randomShipAutoTarget();
       chooseShipAutoTurn(time);
-      shipAutoLastWakePoint = null;
       shipAutoTravelAngle = null;
       resetShipWakeDirection();
       return;
@@ -2172,7 +2104,7 @@ class FloatingSphere {
       z: current.z + Math.cos(travelAngle) * step,
     };
 
-    cargoShip.moveToWaterPoint(nextPoint, getShipMovementSpeedAmount(step, deltaTime));
+    cargoShip.moveToWaterPoint(nextPoint);
   }
 
   function updateShipCircleMovement(deltaTime) {
@@ -2200,13 +2132,12 @@ class FloatingSphere {
       z: current.z + dz / distance * step,
     };
 
-    cargoShip.moveToWaterPoint(nextPoint, getShipMovementSpeedAmount(step, deltaTime));
+    cargoShip.moveToWaterPoint(nextPoint);
   }
 
   function updateAutonomousShip(time) {
     if (!cargoShip.visible || draggedVessel === cargoShip || shipMovementMode === shipMovementModeStopped) {
       shipAutoLastTime = time;
-      shipAutoLastWakePoint = null;
       shipAutoTravelAngle = null;
       return;
     }
@@ -2364,20 +2295,166 @@ class FloatingSphere {
     };
   }
 
+  function clearVisualWake() {
+    visualWakePoints.length = 0;
+    visualWakePreviousDirection = null;
+    visualWakeInitialized = false;
+    visualWakeCount = 0;
+  }
+
+  function pruneVisualWake(time) {
+    let writeIndex = 0;
+
+    for (let i = 0; i < visualWakePoints.length; i++) {
+      const point = visualWakePoints[i];
+      if (time - point.time <= visualWakeLifetime) {
+        visualWakePoints[writeIndex++] = point;
+      }
+    }
+
+    visualWakePoints.length = writeIndex;
+  }
+
+  function addVisualWakeSample(x, z, directionX, directionZ, speed, turnAmount, time) {
+    const last = visualWakePoints[visualWakePoints.length - 1];
+
+    if (last) {
+      const dx = x - last.x;
+      const dz = z - last.z;
+      if (Math.sqrt(dx * dx + dz * dz) < visualWakeMinSampleDistance) {
+        return;
+      }
+    }
+
+    const point = {
+      x,
+      z,
+      directionX,
+      directionZ,
+      time,
+      speed,
+      turnAmount,
+    };
+
+    visualWakePoints.push(point);
+
+    while (visualWakePoints.length > visualWakeMaxPoints) {
+      visualWakePoints.shift();
+    }
+  }
+
+  function updateVisualShipWake(time, deltaTime) {
+    if (!cargoShip.visible) {
+      clearVisualWake();
+      visualWakePreviousPosition.copy(cargoShip.group.position);
+      return;
+    }
+
+    if (shipMovementMode === shipMovementModeStopped && draggedVessel !== cargoShip) {
+      pruneVisualWake(time);
+      visualWakePreviousPosition.copy(cargoShip.group.position);
+      visualWakePreviousDirection = null;
+      visualWakeInitialized = true;
+      return;
+    }
+
+    const position = cargoShip.group.position;
+    if (!visualWakeInitialized || deltaTime <= 0) {
+      visualWakePreviousPosition.copy(position);
+      visualWakeInitialized = true;
+      return;
+    }
+
+    const startX = visualWakePreviousPosition.x;
+    const startZ = visualWakePreviousPosition.z;
+    const dx = position.x - visualWakePreviousPosition.x;
+    const dz = position.z - visualWakePreviousPosition.z;
+    const distance = Math.sqrt(dx * dx + dz * dz);
+    visualWakePreviousPosition.copy(position);
+
+    if (distance <= 0.0005) {
+      pruneVisualWake(time);
+      return;
+    }
+
+    const directionX = dx / distance;
+    const directionZ = dz / distance;
+    const speed = clamp(distance / Math.max(deltaTime, 1 / 240) / objectWaterFullWakeVelocity, 0, 1);
+
+    if (speed <= visualWakeMinSpeed) {
+      pruneVisualWake(time);
+      return;
+    }
+
+    const previousDirection = visualWakePreviousDirection;
+    const turnAmount = previousDirection
+      ? clamp((previousDirection.x * directionZ - previousDirection.z * directionX) * wakeTurnSensitivity, -1, 1)
+      : 0;
+
+    visualWakePreviousDirection = { x: directionX, z: directionZ };
+
+    const sampleCount = Math.max(1, Math.min(10, Math.ceil(distance / visualWakeMinSampleDistance)));
+    for (let i = 1; i <= sampleCount; i++) {
+      const sampleBlend = i / sampleCount;
+      const sampleTime = time - deltaTime * (1 - sampleBlend);
+
+      addVisualWakeSample(
+        startX + dx * sampleBlend,
+        startZ + dz * sampleBlend,
+        directionX,
+        directionZ,
+        speed,
+        turnAmount,
+        sampleTime
+      );
+    }
+
+    pruneVisualWake(time);
+  }
+
+  function updateVisualWakeUniforms(material) {
+    visualWakeCount = Math.min(visualWakeMaxPoints, visualWakePoints.length);
+
+    for (let i = 0; i < visualWakeCount; i++) {
+      const point = visualWakePoints[i];
+
+      visualWakePoint0[i].set(point.x, point.z, point.directionX, point.directionZ);
+      visualWakePoint1[i].set(point.time, point.speed, point.turnAmount, 0);
+    }
+
+    visualWakeHullSize.set(
+      cargoShip.wakeExtents.bow,
+      cargoShip.wakeExtents.stern,
+      cargoShip.wakeExtents.beam,
+      visualWakeLifetime
+    );
+    material.uniforms['visualWakeCount'].value = visualWakeCount;
+    material.uniforms['visualWakePoint0'].value = visualWakePoint0;
+    material.uniforms['visualWakePoint1'].value = visualWakePoint1;
+    material.uniforms['visualWakeHullSize'].value = visualWakeHullSize;
+  }
+
   function clearObjectPressureField() {
     objectPressureFieldData.fill(0);
   }
 
   function splatObjectPressure(sample) {
     const axisLength = Math.sqrt(sample.axisX * sample.axisX + sample.axisZ * sample.axisZ);
-    if (axisLength < 0.0001) return;
+    if (!Number.isFinite(axisLength) || axisLength < 0.0001) return;
 
     const axisX = sample.axisX / axisLength;
     const axisZ = sample.axisZ / axisLength;
-    const halfLength = Math.max(0.002, sample.halfLength);
-    const halfWidth = Math.max(0.002, sample.halfWidth);
+    const rawHalfLength = Number.isFinite(sample.halfLength) ? sample.halfLength : 0;
+    const rawHalfWidth = Number.isFinite(sample.halfWidth) ? sample.halfWidth : 0;
+    const halfLength = clamp(rawHalfLength, 0.002, objectWaterSegmentMaxLength * 0.5);
+    const halfWidth = clamp(rawHalfWidth, 0.002, objectWaterSegmentMaxWidth * 0.5);
+    const target = Number.isFinite(sample.target) ? clamp(sample.target, -objectWaterPressureLimit, objectWaterPressureLimit) : 0;
+    const impulse = Number.isFinite(sample.impulse) ? clamp(sample.impulse, -objectWaterImpulseLimit, objectWaterImpulseLimit) : 0;
+    const turbulence = Number.isFinite(sample.turbulence) ? clamp(sample.turbulence, 0, 1) : 0;
     const uvX = worldXToWaterUv(sample.x);
     const uvY = worldZToWaterUv(sample.z);
+    if (!Number.isFinite(uvX) || !Number.isFinite(uvY)) return;
+
     const centerX = uvX * (objectPressureFieldResolution - 1);
     const centerY = uvY * (objectPressureFieldResolution - 1);
     const radius = Math.sqrt(halfLength * halfLength + halfWidth * halfWidth);
@@ -2415,9 +2492,9 @@ class FloatingSphere {
         const smoothFalloff = falloff * falloff * (3 - 2 * falloff) * edgeFade;
         const index = (y * objectPressureFieldResolution + x) * 4;
 
-        objectPressureFieldData[index] += sample.target * smoothFalloff * weight;
-        objectPressureFieldData[index + 1] += sample.impulse * smoothFalloff * weight;
-        objectPressureFieldData[index + 2] += sample.turbulence * smoothFalloff;
+        objectPressureFieldData[index] += target * smoothFalloff * weight;
+        objectPressureFieldData[index + 1] += impulse * smoothFalloff * weight;
+        objectPressureFieldData[index + 2] += turbulence * smoothFalloff;
         objectPressureFieldData[index + 3] += smoothFalloff;
       }
     }
@@ -2425,11 +2502,22 @@ class FloatingSphere {
 
   function addObjectPressureSegment(startX, startZ, axisX, axisZ, length, width, target, impulse, turbulence = 0) {
     const axisLength = Math.sqrt(axisX * axisX + axisZ * axisZ);
-    if (axisLength < 0.0001 || length <= 0 || width <= 0) return;
+    if (
+      !Number.isFinite(axisLength) ||
+      axisLength < 0.0001 ||
+      length <= 0 ||
+      width <= 0 ||
+      !Number.isFinite(startX) ||
+      !Number.isFinite(startZ) ||
+      !Number.isFinite(length) ||
+      !Number.isFinite(width)
+    ) return;
 
     const normalizedX = axisX / axisLength;
     const normalizedZ = axisZ / axisLength;
-    const halfLength = length * 0.5;
+    const safeLength = clamp(length, 0.004, objectWaterSegmentMaxLength);
+    const safeWidth = clamp(width, 0.004, objectWaterSegmentMaxWidth);
+    const halfLength = safeLength * 0.5;
 
     splatObjectPressure({
       x: startX + normalizedX * halfLength,
@@ -2437,7 +2525,7 @@ class FloatingSphere {
       axisX: normalizedX,
       axisZ: normalizedZ,
       halfLength,
-      halfWidth: width * 0.5,
+      halfWidth: safeWidth * 0.5,
       target,
       impulse,
       turbulence,
@@ -2535,71 +2623,450 @@ class FloatingSphere {
     return result;
   }
 
-  function buildObjectWaterEdges(contacts) {
-    const binCount = Math.max(3, Math.min(objectWaterSideBins, Math.ceil(contacts.points.length / 4)));
-    const binWidth = contacts.beam / binCount;
-    const wakeLength = contacts.wakeLength || contacts.length;
-    const wakeBeam = contacts.wakeBeam || contacts.beam;
-    const leadingBand = Math.max(wakeLength * 0.18, wakeBeam * 0.25, 0.025);
-    const leading = [];
-    const trailing = [];
-
-    for (let i = 0; i < binCount; i++) {
-      const binMin = contacts.minSide + binWidth * i;
-      const binMax = i === binCount - 1 ? contacts.maxSide + 0.0001 : binMin + binWidth;
-      let leadingPoint = null;
-      let trailingPoint = null;
-
-      for (const point of contacts.points) {
-        if (point.side < binMin || point.side > binMax) continue;
-
-        if (!leadingPoint || point.along > leadingPoint.along) {
-          leadingPoint = point;
-        }
-
-        if (!trailingPoint || point.along < trailingPoint.along) {
-          trailingPoint = point;
-        }
-      }
-
-      if (leadingPoint && contacts.maxAlong - leadingPoint.along <= leadingBand) {
-        leading.push(leadingPoint);
-      }
-
-      if (trailingPoint && trailingPoint.along - contacts.minAlong <= leadingBand) {
-        trailing.push(trailingPoint);
-      }
-    }
-
-    return { leading, trailing, binWidth };
-  }
-
-  function averageObjectWaterPoints(points) {
-    if (points.length === 0) return null;
-
-    const sum = points.reduce((total, point) => {
-      total.x += point.x;
-      total.z += point.z;
-      total.along += point.along;
-      total.side += point.side;
-      total.immersion += point.immersion;
-      return total;
-    }, { x: 0, z: 0, along: 0, side: 0, immersion: 0 });
-
-    return {
-      x: sum.x / points.length,
-      z: sum.z / points.length,
-      along: sum.along / points.length,
-      side: sum.side / points.length,
-      immersion: sum.immersion / points.length,
-    };
-  }
-
   function wakeAxesToWorld(along, side, directionX, directionZ, sideX, sideZ) {
     return {
       x: directionX * along + sideX * side,
       z: directionZ * along + sideZ * side,
     };
+  }
+
+  function getWakePointFrame(point) {
+    return {
+      trailX: -point.directionX,
+      trailZ: -point.directionZ,
+      sideX: point.sideX,
+      sideZ: point.sideZ,
+    };
+  }
+
+  function buildObjectWaterSlices(contacts, directionX, directionZ, sideX, sideZ, requestedCount) {
+    const sliceCount = Math.max(4, requestedCount);
+    const length = Math.max(0.001, contacts.maxAlong - contacts.minAlong);
+    const slices = [];
+
+    for (let i = 0; i < sliceCount; i++) {
+      const minAlong = contacts.minAlong + length * i / sliceCount;
+      const maxAlong = contacts.minAlong + length * (i + 1) / sliceCount;
+      let minSide = Infinity;
+      let maxSide = -Infinity;
+      let sideSum = 0;
+      let alongSum = 0;
+      let immersionSum = 0;
+      let count = 0;
+
+      for (const point of contacts.points) {
+        if (point.along < minAlong || point.along > maxAlong) continue;
+
+        minSide = Math.min(minSide, point.side);
+        maxSide = Math.max(maxSide, point.side);
+        sideSum += point.side;
+        alongSum += point.along;
+        immersionSum += point.immersion;
+        count++;
+      }
+
+      if (count < 2 || minSide >= maxSide) continue;
+
+      const along = alongSum / count;
+      const side = sideSum / count;
+      const center = wakeAxesToWorld(along, side, directionX, directionZ, sideX, sideZ);
+
+      slices.push({
+        x: center.x,
+        z: center.z,
+        along,
+        side,
+        minSide,
+        maxSide,
+        beam: maxSide - minSide,
+        immersion: immersionSum / count,
+        t: clamp((along - contacts.minAlong) / length, 0, 1),
+      });
+    }
+
+    return slices;
+  }
+
+  function addContinuousHullPressure(interaction, contacts, slices, directionX, directionZ, sideX, sideZ, speedAmount, turnAmount) {
+    if (slices.length === 0) return;
+
+    const isHullWake = interaction.wakeShape === 'hull';
+    const alignment = getObjectWakeHeadingAlignment(interaction, directionX, directionZ);
+    const speedScale = speedAmount * (isHullWake ? 0.74 + alignment * 0.34 : 0.7);
+    const length = contacts.wakeLength || contacts.length;
+    const beam = contacts.wakeBeam || contacts.beam;
+    const sliceThickness = Math.max(0.012, length / Math.max(8, slices.length) * (isHullWake ? 1.45 : 1.1));
+    const sideWakeWidth = Math.max(
+      isHullWake ? 0.010 : 0.016,
+      Math.min(isHullWake ? 0.034 : 0.055, beam * (isHullWake ? 0.08 : 0.18))
+    ) * interaction.radiusScale;
+    const turnMagnitude = Math.min(1, Math.abs(turnAmount));
+
+    for (const slice of slices) {
+      const bowProfile = Math.pow(smoothStep(0.50, 1.0, slice.t), 1.55);
+      const midProfile = Math.sin(slice.t * Math.PI);
+      const sternProfile = Math.pow(1.0 - smoothStep(0.0, 0.42, slice.t), 1.35);
+      const displacement = (bowProfile * 0.92 + midProfile * 0.32 - sternProfile * 0.45) *
+        slice.immersion *
+        speedScale *
+        interaction.strengthScale;
+
+      if (Math.abs(displacement) > 0.0001) {
+        addObjectPressureSegment(
+          slice.x,
+          slice.z,
+          sideX,
+          sideZ,
+          Math.max(slice.beam * 1.04, beam * 0.22),
+          sliceThickness,
+          displacement * objectWaterSidePressureStrength,
+          displacement * objectWaterSidePressureStrength * 0.72,
+          midProfile * 0.34 + sternProfile * 0.28
+        );
+      }
+
+      for (const sideSign of [-1, 1]) {
+        const railSide = sideSign < 0 ? slice.minSide : slice.maxSide;
+        const rail = wakeAxesToWorld(slice.along, railSide, directionX, directionZ, sideX, sideZ);
+        const sideScale = getTurnSideScale(turnAmount, sideSign, 1.55, 0.38);
+        const railStrength = (0.24 + bowProfile * 0.9 + midProfile * 0.35) *
+          slice.immersion *
+          speedScale *
+          interaction.strengthScale *
+          sideScale;
+
+        addObjectPressureSegment(
+          rail.x,
+          rail.z,
+          -directionX,
+          -directionZ,
+          sliceThickness * (isHullWake ? 2.4 : 1.2),
+          sideWakeWidth,
+          railStrength * objectWaterSidePressureStrength,
+          railStrength * objectWaterSidePressureStrength * 0.82,
+          0.28 + midProfile * 0.32
+        );
+      }
+    }
+
+    const leading = slices[slices.length - 1];
+    const trailing = slices[0];
+    const bowRam = objectWaterBowPressureStrength * interaction.strengthScale * speedScale * (0.72 + leading.immersion * 0.5);
+    const bowWidth = Math.max(beam * (isHullWake ? 0.42 : 0.68), sideWakeWidth * 2.8);
+    const bowLength = Math.max(length * (isHullWake ? 0.42 : 0.28), beam * 0.8);
+
+    addObjectPressureSegment(
+      leading.x,
+      leading.z,
+      -directionX,
+      -directionZ,
+      bowLength,
+      bowWidth,
+      bowRam,
+      bowRam * 0.78,
+      0.45
+    );
+
+    for (const sideSign of [-1, 1]) {
+      const bowSide = getWakeSliceSidePoint(leading, directionX, directionZ, sideX, sideZ, sideSign);
+      if (!bowSide) continue;
+
+      const sideScale = getTurnSideScale(turnAmount, sideSign, 1.85, 0.4);
+      const outside = sideScale > 1;
+      const bowArmStrength = objectWaterDivergentStrength * interaction.strengthScale * speedScale * sideScale * 1.2;
+      const bowArmLength = Math.max(length * (isHullWake ? 1.55 : 0.85), beam * (isHullWake ? 3.2 : 1.5)) * (1 + turnMagnitude * (outside ? 0.62 : -0.12));
+      const bowArmWidth = Math.max(sideWakeWidth * (outside ? 1.1 : 0.62), beam * (isHullWake ? 0.038 : 0.09));
+
+      addObjectDivergentPressure(
+        bowSide,
+        -directionX,
+        -directionZ,
+        sideX,
+        sideZ,
+        sideSign,
+        bowArmLength,
+        bowArmWidth,
+        bowArmStrength
+      );
+    }
+
+    const sternWash = objectWaterSternSuctionStrength * interaction.strengthScale * speedScale * (0.62 + trailing.immersion * 0.6);
+    const sternLength = Math.max(length * (isHullWake ? 0.72 : 0.52), beam * (isHullWake ? 1.8 : 1.1)) * (1 + turnMagnitude * 0.14);
+    const sternWidth = Math.max(beam * (isHullWake ? 0.28 : 0.45), sideWakeWidth * 3.2);
+
+    addObjectPressureSegment(
+      trailing.x,
+      trailing.z,
+      -directionX,
+      -directionZ,
+      sternLength,
+      sternWidth,
+      -sternWash,
+      sternWash * 0.68,
+      1.0
+    );
+
+    const propWash = objectWaterPropWashStrength * interaction.strengthScale * speedScale;
+    const washLength = Math.max(length * (isHullWake ? 0.95 : 0.62), beam * (isHullWake ? 2.25 : 1.25)) * (1 + turnMagnitude * 0.14);
+    const washWidth = Math.max(beam * (isHullWake ? 0.18 : 0.32), sideWakeWidth * 2.4);
+    const shoulderWidth = Math.max(sideWakeWidth * 0.72, beam * (isHullWake ? 0.035 : 0.08));
+
+    addObjectPressureSegment(
+      trailing.x,
+      trailing.z,
+      -directionX,
+      -directionZ,
+      washLength,
+      washWidth,
+      -propWash * (isHullWake ? 0.46 : 0.28),
+      propWash * (isHullWake ? 0.94 : 0.48),
+      1.0
+    );
+
+    for (const sideSign of [-1, 1]) {
+      const shoulder = wakeAxesToWorld(
+        trailing.along,
+        trailing.side + beam * (isHullWake ? 0.18 : 0.28) * sideSign,
+        directionX,
+        directionZ,
+        sideX,
+        sideZ
+      );
+      const sideScale = getTurnSideScale(turnAmount, sideSign, 1.35, 0.36);
+      const outside = sideScale > 1;
+
+      addObjectPressureSegment(
+        shoulder.x,
+        shoulder.z,
+        -directionX,
+        -directionZ,
+        washLength * (outside ? 0.96 : 0.58),
+        shoulderWidth * (outside ? 1.22 : 0.72),
+        propWash * 0.34 * sideScale,
+        propWash * 0.62 * sideScale,
+        0.92
+      );
+    }
+
+    for (const sideSign of [-1, 1]) {
+      const shoulderSide = sideSign < 0 ? trailing.minSide : trailing.maxSide;
+      const shoulder = wakeAxesToWorld(trailing.along, shoulderSide, directionX, directionZ, sideX, sideZ);
+      const sideScale = getTurnSideScale(turnAmount, sideSign, 1.9, 0.48);
+      const outside = sideScale > 1;
+      const divergentStrength = objectWaterDivergentStrength * interaction.strengthScale * speedScale * sideScale;
+      const divergentLength = Math.max(length * (isHullWake ? 0.95 : 0.65), beam * (isHullWake ? 2.1 : 1.2)) * (1 + turnMagnitude * (outside ? 0.52 : -0.12));
+      const divergentWidth = Math.max(sideWakeWidth * (outside ? 1.05 : 0.56), beam * (isHullWake ? 0.045 : 0.11));
+
+      addObjectDivergentPressure(
+        shoulder,
+        -directionX,
+        -directionZ,
+        sideX,
+        sideZ,
+        sideSign,
+        divergentLength,
+        divergentWidth,
+        divergentStrength
+      );
+    }
+  }
+
+  function getWakeSternFromSlices(slices) {
+    if (slices.length === 0) return null;
+    return slices[0];
+  }
+
+  function getWakeBowFromSlices(slices) {
+    if (slices.length === 0) return null;
+    return slices[slices.length - 1];
+  }
+
+  function getWakeSliceSidePoint(slice, directionX, directionZ, sideX, sideZ, sideSign) {
+    if (!slice) return null;
+
+    const side = sideSign < 0 ? slice.minSide : slice.maxSide;
+    return wakeAxesToWorld(slice.along, side, directionX, directionZ, sideX, sideZ);
+  }
+
+  function addWakeHistoryPoint(interaction, source, directionX, directionZ, sideX, sideZ, length, beam, speedAmount, turnAmount, time, emitterType, sideSign = 0) {
+    if (!source || speedAmount <= 0.001) return;
+
+    const history = interaction.wakeHistory;
+    const key = emitterType + ':' + sideSign;
+    const last = interaction.lastWakeHistoryByType[key];
+    const minDistance = Math.max(wakeHistoryMinSampleDistance, length * 0.035);
+
+    if (last) {
+      const dx = source.x - last.x;
+      const dz = source.z - last.z;
+      if (Math.sqrt(dx * dx + dz * dz) < minDistance) {
+        return;
+      }
+    }
+
+    const point = {
+      x: source.x,
+      z: source.z,
+      directionX,
+      directionZ,
+      sideX,
+      sideZ,
+      length,
+      beam,
+      speed: speedAmount,
+      time,
+      turnAmount,
+      emitterType,
+      sideSign,
+      strength: interaction.strengthScale,
+      radiusScale: interaction.radiusScale,
+      hullWake: interaction.wakeShape === 'hull',
+    };
+
+    history.push(point);
+    interaction.lastWakeHistoryByType[key] = point;
+
+    while (history.length > wakeHistoryMaxPoints) {
+      const removed = history.shift();
+      if (removed) {
+        const removedKey = removed.emitterType + ':' + removed.sideSign;
+        if (interaction.lastWakeHistoryByType[removedKey] === removed) {
+          delete interaction.lastWakeHistoryByType[removedKey];
+        }
+      }
+    }
+  }
+
+  function renderWakeHistoryPoint(point, time) {
+    const age = time - point.time;
+    if (age < 0 || age > wakeHistoryLifetime) return false;
+
+    const ageFade = 1 - smoothStep(wakeHistoryLifetime * 0.42, wakeHistoryLifetime, age);
+    const youngFade = smoothStep(0.0, 0.28, age);
+    const fade = ageFade * (0.55 + youngFade * 0.45);
+    if (fade <= 0.001) return false;
+
+    const speed = point.speed;
+    const length = point.length;
+    const beam = point.beam;
+    const hullScale = point.hullWake ? 1 : 0.58;
+    const turnMagnitude = Math.min(1, Math.abs(point.turnAmount));
+    const centerLength = Math.max(length * (point.hullWake ? 0.68 : 0.46), beam * (point.hullWake ? 1.7 : 0.95));
+    const centerWidth = Math.max(beam * (point.hullWake ? 0.18 : 0.25), 0.018) * point.radiusScale;
+    const armLength = Math.max(length * (point.hullWake ? 0.9 : 0.55), beam * (point.hullWake ? 2.0 : 1.1));
+    const armWidth = Math.max(beam * (point.hullWake ? 0.038 : 0.075), 0.008) * point.radiusScale;
+    const fixedFrame = getWakePointFrame(point);
+    const trailX = fixedFrame.trailX;
+    const trailZ = fixedFrame.trailZ;
+    const fixedSideX = fixedFrame.sideX;
+    const fixedSideZ = fixedFrame.sideZ;
+    const centerStrength = wakeHistoryCentralStrength * point.strength * speed * fade * hullScale;
+
+    if (point.emitterType === wakeEmitterBowLeft || point.emitterType === wakeEmitterBowRight) {
+      const sideSign = point.sideSign || (point.emitterType === wakeEmitterBowLeft ? -1 : 1);
+      const sideScale = getTurnSideScale(point.turnAmount, sideSign, 1.85, 0.42);
+      const bowArmStrength = wakeHistoryKelvinStrength * point.strength * speed * fade * sideScale * hullScale * 1.35;
+      const bowFoamStrength = wakeHistoryFoamStrength * point.strength * speed * fade * sideScale * hullScale * 0.9;
+      const armOrigin = {
+        x: point.x,
+        z: point.z,
+      };
+
+      addObjectDivergentPressure(
+        armOrigin,
+        trailX,
+        trailZ,
+        fixedSideX,
+        fixedSideZ,
+        sideSign,
+        armLength * (1.05 + turnMagnitude * (sideScale > 1 ? 0.35 : 0.04)),
+        Math.max(armWidth * (sideScale > 1 ? 0.95 : 0.58), beam * 0.024),
+        bowArmStrength
+      );
+
+      addObjectPressureSegment(
+        armOrigin.x,
+        armOrigin.z,
+        trailX * Math.cos(objectWaterKelvinAngle) + fixedSideX * Math.sin(objectWaterKelvinAngle) * sideSign,
+        trailZ * Math.cos(objectWaterKelvinAngle) + fixedSideZ * Math.sin(objectWaterKelvinAngle) * sideSign,
+        armLength * (sideScale > 1 ? 0.92 : 0.58),
+        Math.max(armWidth * 0.92, beam * 0.032),
+        bowFoamStrength * 0.48,
+        bowFoamStrength * 0.66,
+        0.72 * fade
+      );
+
+      return true;
+    }
+
+    addObjectPressureSegment(
+      point.x,
+      point.z,
+      trailX,
+      trailZ,
+      centerLength * (1 + turnMagnitude * 0.12),
+      centerWidth * (1 + turnMagnitude * 0.22),
+      -centerStrength * 0.46,
+      centerStrength * 0.82,
+      0.92 * fade
+    );
+
+    for (const sideSign of [-1, 1]) {
+      const sideScale = getTurnSideScale(point.turnAmount, sideSign, 1.7, 0.45);
+      const outside = sideScale > 1;
+      const shoulderX = point.x + fixedSideX * beam * 0.2 * sideSign;
+      const shoulderZ = point.z + fixedSideZ * beam * 0.2 * sideSign;
+      const kelvinStrength = wakeHistoryKelvinStrength * point.strength * speed * fade * sideScale * hullScale;
+
+      addObjectDivergentPressure(
+        { x: shoulderX, z: shoulderZ },
+        trailX,
+        trailZ,
+        fixedSideX,
+        fixedSideZ,
+        sideSign,
+        armLength * (1 + turnMagnitude * (outside ? 0.38 : -0.08)),
+        armWidth * (1 + turnMagnitude * (outside ? 0.24 : -0.12)),
+        kelvinStrength
+      );
+
+      const foamShoulderX = point.x + fixedSideX * beam * 0.24 * sideSign;
+      const foamShoulderZ = point.z + fixedSideZ * beam * 0.24 * sideSign;
+      const shoulderStrength = wakeHistoryFoamStrength * point.strength * speed * fade * sideScale * hullScale;
+
+      addObjectPressureSegment(
+        foamShoulderX,
+        foamShoulderZ,
+        trailX,
+        trailZ,
+        centerLength * 0.68,
+        Math.max(armWidth * 0.8, beam * 0.028),
+        shoulderStrength * 0.42,
+        shoulderStrength * 0.74,
+        0.86 * fade
+      );
+    }
+
+    return true;
+  }
+
+  function renderWakeHistory(interaction, time) {
+    const history = interaction.wakeHistory;
+    if (history.length === 0) return;
+
+    let writeIndex = 0;
+    for (let i = 0; i < history.length; i++) {
+      const point = history[i];
+      if (renderWakeHistoryPoint(point, time)) {
+        history[writeIndex++] = point;
+      }
+    }
+
+    history.length = writeIndex;
+    interaction.lastWakeHistoryByType = {};
+    for (const point of history) {
+      interaction.lastWakeHistoryByType[point.emitterType + ':' + point.sideSign] = point;
+    }
   }
 
   function getObjectWakeDimensions(interaction, contacts) {
@@ -2624,11 +3091,51 @@ class FloatingSphere {
     return Math.abs(headingX * directionX + headingZ * directionZ);
   }
 
-  function writeObjectWaterInteraction(interaction, directionX, directionZ, speedAmount = 1) {
+  function updateObjectWakeTurn(interaction, directionX, directionZ) {
+    if (!interaction.hasWakeDirection) {
+      interaction.hasWakeDirection = true;
+      interaction.wakeDirectionX = directionX;
+      interaction.wakeDirectionZ = directionZ;
+      interaction.wakeTurnAmount = 0;
+      return 0;
+    }
+
+    const turnAmount = clamp(
+      (interaction.wakeDirectionX * directionZ - interaction.wakeDirectionZ * directionX) * wakeTurnSensitivity,
+      -1,
+      1
+    );
+
+    interaction.wakeTurnAmount = interaction.wakeTurnAmount * 0.62 + turnAmount * 0.38;
+    interaction.wakeDirectionX = interaction.wakeDirectionX * 0.72 + directionX * 0.28;
+    interaction.wakeDirectionZ = interaction.wakeDirectionZ * 0.72 + directionZ * 0.28;
+
+    const length = Math.sqrt(
+      interaction.wakeDirectionX * interaction.wakeDirectionX +
+      interaction.wakeDirectionZ * interaction.wakeDirectionZ
+    );
+
+    if (length > 0.0001) {
+      interaction.wakeDirectionX /= length;
+      interaction.wakeDirectionZ /= length;
+    }
+
+    return interaction.wakeTurnAmount;
+  }
+
+  function getTurnSideScale(turnAmount, sideSign, outsideBoost = 0.8, insideDamp = 0.28) {
+    const turnMagnitude = Math.min(1, Math.abs(turnAmount));
+    if (turnMagnitude < 0.001) return 1;
+
+    const outside = Math.sign(turnAmount) === sideSign;
+    return outside
+      ? 1 + turnMagnitude * outsideBoost
+      : 1 - turnMagnitude * insideDamp;
+  }
+
+  function writeObjectWaterInteraction(interaction, directionX, directionZ, speedAmount = 1, turnAmount = 0, time = simulationTime) {
     const sideX = -directionZ;
     const sideZ = directionX;
-    const trailX = -directionX;
-    const trailZ = -directionZ;
     const contacts = collectObjectWaterContacts(interaction, directionX, directionZ, sideX, sideZ);
     if (!contacts) return;
 
@@ -2636,196 +3143,79 @@ class FloatingSphere {
     contacts.wakeLength = dimensions.length;
     contacts.wakeBeam = dimensions.beam;
 
-    const edges = buildObjectWaterEdges(contacts);
-    if (edges.leading.length === 0 || edges.trailing.length === 0) return;
-
-    const effectiveLength = dimensions.length;
-    const effectiveBeam = dimensions.beam;
     const isHullWake = interaction.wakeShape === 'hull';
-    const speedLengthScale = 0.6 + speedAmount * 0.5;
-    const alignment = getObjectWakeHeadingAlignment(interaction, directionX, directionZ);
-    const turnWakeScale = isHullWake ? 0.48 + alignment * 0.52 : 0.7;
-    const trailLengthLimit = dimensions.maxLength * (isHullWake ? 2.15 : 1.25);
-    const divergentLengthLimit = dimensions.maxLength * (isHullWake ? 1.9 : 1.1);
-    const centerSide = (contacts.minSide + contacts.maxSide) * 0.5;
-    const trailLength = Math.min(
-      trailLengthLimit,
-      Math.max(
-        isHullWake ? 0.28 : 0.12,
-        effectiveLength * (isHullWake ? 1.75 : 1.05),
-        effectiveBeam * (isHullWake ? 2.7 : 1.55)
-      ) * speedLengthScale
+    const slices = buildObjectWaterSlices(
+      contacts,
+      directionX,
+      directionZ,
+      sideX,
+      sideZ,
+      isHullWake ? 22 : 9
     );
-    const trailWidth = Math.max(
-      isHullWake ? 0.014 : 0.018,
-      Math.min(isHullWake ? 0.075 : 0.09, effectiveBeam * (isHullWake ? 0.18 : 0.32))
-    ) * interaction.radiusScale;
-    const divergentLength = Math.min(
-      divergentLengthLimit,
-      Math.max(
-        isHullWake ? 0.26 : 0.1,
-        effectiveLength * (isHullWake ? 1.5 : 0.85),
-        effectiveBeam * (isHullWake ? 2.5 : 1.2)
-      ) * speedLengthScale
+    const stern = getWakeSternFromSlices(slices);
+    const bow = getWakeBowFromSlices(slices);
+    const bowLeft = getWakeSliceSidePoint(bow, directionX, directionZ, sideX, sideZ, -1);
+    const bowRight = getWakeSliceSidePoint(bow, directionX, directionZ, sideX, sideZ, 1);
+
+    addContinuousHullPressure(
+      interaction,
+      contacts,
+      slices,
+      directionX,
+      directionZ,
+      sideX,
+      sideZ,
+      speedAmount,
+      turnAmount
     );
-    const divergentWidth = Math.max(
-      0.012,
-      Math.min(isHullWake ? 0.052 : 0.04, effectiveBeam * (isHullWake ? 0.1 : 0.16))
-    ) * interaction.radiusScale;
-    const leadingStrength = objectWaterLeadingStrength * interaction.strengthScale * speedAmount * (isHullWake ? 0.78 + alignment * 0.22 : 0.62);
-    const trailStrength = objectWaterTrailStrength * interaction.strengthScale * speedAmount * turnWakeScale;
-    const divergentStrength = objectWaterDivergentStrength * interaction.strengthScale * speedAmount * turnWakeScale * (isHullWake ? 1 : 0.42);
-    const sortedLeading = [...edges.leading].sort((a, b) => a.side - b.side);
-    const leftLeading = sortedLeading[0];
-    const rightLeading = sortedLeading[sortedLeading.length - 1];
-    const centerLeading = averageObjectWaterPoints(sortedLeading);
 
-    if (centerLeading) {
-      const cutStrength = leadingStrength * (0.5 + centerLeading.immersion * 0.5);
-      const bowCut = wakeAxesToWorld(
-        centerLeading.along - effectiveLength * 0.035,
-        centerLeading.side,
-        directionX,
-        directionZ,
-        sideX,
-        sideZ
-      );
-
-      addObjectPressureSegment(
-        bowCut.x,
-        bowCut.z,
-        trailX,
-        trailZ,
-        Math.max(effectiveLength * (isHullWake ? 0.34 : 0.24), effectiveBeam * (isHullWake ? 1.05 : 0.8)),
-        Math.max(
-          isHullWake ? 0.014 : 0.02,
-          Math.min(isHullWake ? 0.07 : 0.095, effectiveBeam * (isHullWake ? 0.16 : 0.38))
-        ) * interaction.radiusScale,
-        -cutStrength * (isHullWake ? 0.55 : 0.36),
-        -cutStrength * (isHullWake ? 0.2 : 0.12),
-        0.18
-      );
-    }
-
-    if (!isHullWake) {
-      for (const sideSign of [-1, 1]) {
-        const shoulder = sideSign < 0 ? leftLeading : rightLeading;
-        const shoulderAlong = shoulder ? shoulder.along : contacts.maxAlong - effectiveLength * 0.08;
-        const shoulderSide = shoulder ? shoulder.side : centerSide + effectiveBeam * 0.46 * sideSign;
-        const sideRail = wakeAxesToWorld(
-          shoulderAlong - effectiveLength * 0.08,
-          shoulderSide,
-          directionX,
-          directionZ,
-          sideX,
-          sideZ
-        );
-
-        addObjectPressureSegment(
-          sideRail.x,
-          sideRail.z,
-          trailX,
-          trailZ,
-          Math.max(effectiveLength * 0.42, effectiveBeam * 0.85),
-          Math.max(0.012, Math.min(0.045, effectiveBeam * 0.18)) * interaction.radiusScale,
-          leadingStrength * 0.22,
-          leadingStrength * 0.16,
-          0.32
-        );
-        if (speedAmount > 0.35) {
-          addObjectDivergentPressure(
-            shoulder || sideRail,
-            trailX,
-            trailZ,
-            sideX,
-            sideZ,
-            sideSign,
-            divergentLength * 0.55,
-            divergentWidth,
-            divergentStrength * (shoulder ? shoulder.immersion : 0.65) * 0.65
-          );
-        }
-      }
-    }
-
-    const sortedTrailing = [...edges.trailing].sort((a, b) => a.side - b.side);
-    const leftTrailing = sortedTrailing[0];
-    const rightTrailing = sortedTrailing[sortedTrailing.length - 1];
-    const centerTrailing = averageObjectWaterPoints(sortedTrailing);
-
-    if (centerTrailing) {
-      const strength = trailStrength * (0.42 + centerTrailing.immersion * 0.58);
-
-      addObjectPressureSegment(
-        centerTrailing.x,
-        centerTrailing.z,
-        trailX,
-        trailZ,
-        trailLength,
-        trailWidth * (isHullWake ? 1.45 : 1.2),
-        -strength * (isHullWake ? 0.72 : 0.42),
-        strength * (isHullWake ? 0.56 : 0.34),
-        1.0
-      );
-
-      for (const sideSign of [-1, 1]) {
-        const washTrack = wakeAxesToWorld(
-          centerTrailing.along,
-          centerTrailing.side + effectiveBeam * 0.22 * sideSign,
-          directionX,
-          directionZ,
-          sideX,
-          sideZ
-        );
-
-        addObjectPressureSegment(
-          washTrack.x,
-          washTrack.z,
-          trailX,
-          trailZ,
-          trailLength * (isHullWake ? 0.72 : 0.55),
-          trailWidth * (isHullWake ? 0.65 : 0.8),
-          strength * (isHullWake ? 0.34 : 0.2),
-          strength * (isHullWake ? 0.5 : 0.28),
-          0.9
-        );
-      }
-    }
-
-    for (const point of [leftTrailing, rightTrailing]) {
-      if (!point) continue;
-
-      const sideSign = point.side >= centerSide ? 1 : -1;
-      const strength = trailStrength * (0.4 + point.immersion * 0.6);
-
-      addObjectPressureSegment(
-        point.x,
-        point.z,
-        trailX,
-        trailZ,
-        trailLength * (isHullWake ? 0.82 : 0.5),
-        trailWidth * (isHullWake ? 0.72 : 0.7),
-        strength * (isHullWake ? 0.32 : 0.16),
-        strength * (isHullWake ? 0.48 : 0.24),
-        0.62
-      );
-      if (isHullWake || speedAmount > 0.45) {
-        addObjectDivergentPressure(
-          point,
-          trailX,
-          trailZ,
-          sideX,
-          sideZ,
-          sideSign,
-          divergentLength * (isHullWake ? 1 : 0.45),
-          divergentWidth,
-          divergentStrength * (0.45 + point.immersion * 0.55)
-        );
-      }
-    }
+    addWakeHistoryPoint(
+      interaction,
+      stern,
+      directionX,
+      directionZ,
+      sideX,
+      sideZ,
+      dimensions.length,
+      dimensions.beam,
+      speedAmount,
+      turnAmount,
+      time,
+      wakeEmitterSternCenter
+    );
+    addWakeHistoryPoint(
+      interaction,
+      bowLeft,
+      directionX,
+      directionZ,
+      sideX,
+      sideZ,
+      dimensions.length,
+      dimensions.beam,
+      speedAmount,
+      turnAmount,
+      time,
+      wakeEmitterBowLeft,
+      -1
+    );
+    addWakeHistoryPoint(
+      interaction,
+      bowRight,
+      directionX,
+      directionZ,
+      sideX,
+      sideZ,
+      dimensions.length,
+      dimensions.beam,
+      speedAmount,
+      turnAmount,
+      time,
+      wakeEmitterBowRight,
+      1
+    );
   }
 
-  function updateObjectWaterInteractions(deltaTime) {
+  function updateObjectWaterInteractions(deltaTime, time) {
     const dt = Math.max(1 / 240, deltaTime);
 
     clearObjectPressureField();
@@ -2837,6 +3227,10 @@ class FloatingSphere {
         root.getWorldPosition(interaction.previousPosition);
         interaction.velocityX = 0;
         interaction.velocityZ = 0;
+        interaction.hasWakeDirection = false;
+        interaction.wakeTurnAmount = 0;
+        interaction.wakeHistory.length = 0;
+        interaction.lastWakeHistoryByType = {};
         continue;
       }
 
@@ -2857,20 +3251,36 @@ class FloatingSphere {
         interaction.velocityZ * interaction.velocityZ
       );
 
-      if (velocityLength < objectWaterMinVelocity) continue;
+      if (velocityLength < objectWaterMinVelocity) {
+        interaction.hasWakeDirection = false;
+        interaction.wakeTurnAmount *= 0.85;
+        renderWakeHistory(interaction, time);
+        continue;
+      }
 
       const speedAmount = smoothStep(objectWaterMinVelocity, objectWaterFullWakeVelocity, velocityLength);
-      if (speedAmount <= 0.001) continue;
+      if (speedAmount <= 0.001) {
+        renderWakeHistory(interaction, time);
+        continue;
+      }
+
+      const directionX = interaction.velocityX / velocityLength;
+      const directionZ = interaction.velocityZ / velocityLength;
+      const turnAmount = updateObjectWakeTurn(interaction, directionX, directionZ);
 
       root.updateMatrixWorld(true);
       writeObjectWaterInteraction(
         interaction,
-        interaction.velocityX / velocityLength,
-        interaction.velocityZ / velocityLength,
-        speedAmount
+        directionX,
+        directionZ,
+        speedAmount,
+        turnAmount,
+        time
       );
+      renderWakeHistory(interaction, time);
     }
 
+    updateWaveEmitters(time);
     finalizeObjectPressureField();
     objectPressureTexture.needsUpdate = true;
   }
@@ -2887,11 +3297,11 @@ class FloatingSphere {
     const time = simulationTime;
 
     updateAutonomousShip(time);
+    updateVisualShipWake(time, deltaTime);
     floatingSquare.update(time);
 
     updateWaterBounceRects();
-    updateWaveEmitters(time);
-    updateObjectWaterInteractions(deltaTime);
+    updateObjectWaterInteractions(deltaTime, time);
     waterSimulation.stepSimulation(renderer);
     waterSimulation.updateNormals(renderer);
 
@@ -2930,19 +3340,6 @@ class FloatingSphere {
 
   function clampPoolZ(value) {
     return Math.min(waterHalfLength * 0.98, Math.max(-waterHalfLength * 0.98, value));
-  }
-
-  function addWakeDrop(x, z, radius, strength) {
-    const edgeFade = getWaterEdgeFade(x, z);
-    if (edgeFade <= 0) return;
-
-    waterSimulation.addDrop(
-      renderer,
-      x / waterHalfWidth,
-      z / waterHalfLength,
-      radius,
-      strength * objectWakeHeightScale * edgeFade
-    );
   }
 
   function resetWaveEmitters() {
@@ -3001,357 +3398,54 @@ class FloatingSphere {
 
     const direction = normalizeDirection(emitter.direction);
     const side = { x: -direction.z, z: direction.x };
-    const samples = Math.max(2, emitter.samples);
     const troughOffset = emitter.troughOffset || emitter.radius * 1.5;
+    const crestWidth = Math.max(0.012, emitter.radius * 0.48);
+    const crestLength = Math.max(0.02, emitter.width);
+    const edgeFade = getWaterEdgeFade(emitter.origin.x, emitter.origin.z);
+    if (edgeFade <= 0) return;
 
-    for (let i = 0; i < samples; i++) {
-      const t = samples === 1 ? 0.5 : i / (samples - 1);
-      const sideOffset = (t - 0.5) * emitter.width;
-      const edgeFade = Math.sin(t * Math.PI);
-      const fade = 0.35 + edgeFade * 0.65;
-      const x = emitter.origin.x + side.x * sideOffset;
-      const z = emitter.origin.z + side.z * sideOffset;
-
-      addWakeDrop(x, z, emitter.radius, emitter.strength * fade);
-      addWakeDrop(
-        x - direction.x * troughOffset,
-        z - direction.z * troughOffset,
-        emitter.radius * 1.2,
-        emitter.troughStrength * fade
-      );
-    }
+    addObjectPressureSegment(
+      emitter.origin.x - side.x * crestLength * 0.5,
+      emitter.origin.z - side.z * crestLength * 0.5,
+      side.x,
+      side.z,
+      crestLength,
+      crestWidth,
+      emitter.strength * edgeFade,
+      emitter.strength * 0.92 * edgeFade,
+      0.18
+    );
+    addObjectPressureSegment(
+      emitter.origin.x - direction.x * troughOffset - side.x * crestLength * 0.5,
+      emitter.origin.z - direction.z * troughOffset - side.z * crestLength * 0.5,
+      side.x,
+      side.z,
+      crestLength,
+      crestWidth * 1.35,
+      emitter.troughStrength * edgeFade,
+      emitter.troughStrength * 0.72 * edgeFade,
+      0.12
+    );
   }
 
   function updatePointWaveEmitter(emitter, time) {
     if (!shouldEmitWave(emitter, time)) return;
 
-    addWakeDrop(emitter.origin.x, emitter.origin.z, emitter.radius, emitter.strength);
-  }
+    const direction = normalizeDirection(emitter.direction || { x: 0, z: 1 });
+    const edgeFade = getWaterEdgeFade(emitter.origin.x, emitter.origin.z);
+    if (edgeFade <= 0) return;
 
-  function getVesselWakeRadius(vessel) {
-    if (vessel === cargoShip) return cargoShip.wakeExtents.beam * 0.5;
-    if (vessel === floatingSquare) return floatingSquare.size * 0.5;
-    return floatingSphere.radius;
-  }
-
-  function addBluntObjectWake(vessel, toPoint, directionX, directionZ, perpendicularX, perpendicularZ, speed) {
-    const radius = getVesselWakeRadius(vessel);
-    const bowX = toPoint.x + directionX * radius;
-    const bowZ = toPoint.z + directionZ * radius;
-
-    addWakeDrop(bowX, bowZ, radius * 0.52, wakeTroughStrength * speed * 0.7);
-    addWakeDrop(
-      bowX + perpendicularX * radius * 0.72,
-      bowZ + perpendicularZ * radius * 0.72,
-      radius * 0.42,
-      wakeStrength * speed * 0.65
+    addObjectPressureSegment(
+      emitter.origin.x - direction.x * emitter.radius,
+      emitter.origin.z - direction.z * emitter.radius,
+      direction.x,
+      direction.z,
+      emitter.radius * 2.1,
+      emitter.radius * 0.82,
+      emitter.strength * edgeFade,
+      emitter.strength * 0.85 * edgeFade,
+      0.22
     );
-    addWakeDrop(
-      bowX - perpendicularX * radius * 0.72,
-      bowZ - perpendicularZ * radius * 0.72,
-      radius * 0.42,
-      wakeStrength * speed * 0.65
-    );
-  }
-
-  function getShipTurnAmount(directionX, directionZ) {
-    if (!cargoShip.wakeDirection) {
-      cargoShip.wakeDirection = {
-        x: directionX,
-        z: directionZ,
-      };
-      cargoShip.wakeTurnAmount = 0;
-      return 0;
-    }
-
-    const cross = cargoShip.wakeDirection.x * directionZ - cargoShip.wakeDirection.z * directionX;
-    const turnAmount = Math.max(-1, Math.min(1, cross * shipTurnWakeSensitivity));
-
-    cargoShip.wakeTurnAmount = cargoShip.wakeTurnAmount * 0.68 + turnAmount * 0.32;
-    cargoShip.wakeDirection.x = cargoShip.wakeDirection.x * 0.82 + directionX * 0.18;
-    cargoShip.wakeDirection.z = cargoShip.wakeDirection.z * 0.82 + directionZ * 0.18;
-
-    const directionLength = Math.sqrt(
-      cargoShip.wakeDirection.x * cargoShip.wakeDirection.x +
-      cargoShip.wakeDirection.z * cargoShip.wakeDirection.z
-    );
-
-    if (directionLength > 0.0001) {
-      cargoShip.wakeDirection.x /= directionLength;
-      cargoShip.wakeDirection.z /= directionLength;
-    }
-
-    return cargoShip.wakeTurnAmount;
-  }
-
-  function normalizeWakeDirection(x, z) {
-    const length = Math.sqrt(x * x + z * z);
-    if (length < 0.0001) return { x: 0, z: 1 };
-
-    return {
-      x: x / length,
-      z: z / length,
-    };
-  }
-
-  function addShipWakeTrailSample(toPoint, directionX, directionZ, perpendicularX, perpendicularZ, speed, turnAmount) {
-    const sternOffset = cargoShip.wakeExtents.stern;
-    const sternX = toPoint.x - directionX * sternOffset;
-    const sternZ = toPoint.z - directionZ * sternOffset;
-    const history = cargoShip.wakeTrailHistory;
-    const last = history[history.length - 1];
-
-    if (last) {
-      const dx = sternX - last.x;
-      const dz = sternZ - last.z;
-      if (Math.sqrt(dx * dx + dz * dz) < shipWakeTrailMinSampleDistance) {
-        last.directionX = directionX;
-        last.directionZ = directionZ;
-        last.perpendicularX = perpendicularX;
-        last.perpendicularZ = perpendicularZ;
-        last.speed = speed;
-        last.turnAmount = turnAmount;
-        return;
-      }
-    }
-
-    history.push({
-      x: sternX,
-      z: sternZ,
-      directionX,
-      directionZ,
-      perpendicularX,
-      perpendicularZ,
-      speed,
-      turnAmount,
-    });
-
-    while (history.length > shipWakeTrailHistoryLimit) {
-      history.shift();
-    }
-  }
-
-  function getShipWakeTrailSamples(spacing, count) {
-    const history = cargoShip.wakeTrailHistory;
-    const samples = [];
-    if (history.length < 2) return samples;
-
-    let walked = 0;
-    let target = spacing;
-
-    for (let i = history.length - 1; i > 0 && samples.length < count; i--) {
-      const current = history[i];
-      const previous = history[i - 1];
-      const dx = previous.x - current.x;
-      const dz = previous.z - current.z;
-      const segmentLength = Math.sqrt(dx * dx + dz * dz);
-      if (segmentLength < 0.0001) continue;
-
-      while (walked + segmentLength >= target && samples.length < count) {
-        const t = (target - walked) / segmentLength;
-        const direction = normalizeWakeDirection(
-          current.directionX + (previous.directionX - current.directionX) * t,
-          current.directionZ + (previous.directionZ - current.directionZ) * t
-        );
-        const perpendicularX = -direction.z;
-        const perpendicularZ = direction.x;
-
-        samples.push({
-          x: current.x + dx * t,
-          z: current.z + dz * t,
-          directionX: direction.x,
-          directionZ: direction.z,
-          perpendicularX,
-          perpendicularZ,
-          speed: current.speed + (previous.speed - current.speed) * t,
-          turnAmount: current.turnAmount + (previous.turnAmount - current.turnAmount) * t,
-          distance: target,
-        });
-
-        target += spacing;
-      }
-
-      walked += segmentLength;
-    }
-
-    return samples;
-  }
-
-  function addShipBowWake(toPoint, directionX, directionZ, perpendicularX, perpendicularZ, speed) {
-    const bowOffset = cargoShip.wakeExtents.bow;
-    const beam = cargoShip.wakeExtents.beam;
-    const profile = cargoShip.wakeProfile;
-    const bowX = toPoint.x + directionX * bowOffset;
-    const bowZ = toPoint.z + directionZ * bowOffset;
-
-    addWakeDrop(bowX, bowZ, profile.bowRadius * 0.85, wakeTroughStrength * speed * 0.52);
-
-    for (const sideSign of [-1, 1]) {
-      const shoulderX = bowX - directionX * profile.bowRadius * 0.6 + perpendicularX * beam * 0.52 * sideSign;
-      const shoulderZ = bowZ - directionZ * profile.bowRadius * 0.6 + perpendicularZ * beam * 0.52 * sideSign;
-
-      addWakeDrop(
-        shoulderX,
-        shoulderZ,
-        profile.bowRadius * 0.58,
-        wakeStrength * speed * 0.36
-      );
-
-      for (let i = 0; i < 3; i++) {
-        const trail = (i + 1) * profile.trackWakeSpacing * 0.9;
-        const spread = beam * 0.45 + trail * 0.62;
-        const fade = 1 - i / 3;
-
-        addWakeDrop(
-          bowX - directionX * trail + perpendicularX * spread * sideSign,
-          bowZ - directionZ * trail + perpendicularZ * spread * sideSign,
-          profile.bowRadius * (0.45 + i * 0.12),
-          wakeStrength * speed * fade * 0.22
-        );
-      }
-    }
-  }
-
-  function addShipTrackWake(toPoint, directionX, directionZ, perpendicularX, perpendicularZ, speed, turnAmount) {
-    const profile = cargoShip.wakeProfile;
-    const turnMagnitude = Math.min(1, Math.abs(turnAmount));
-    const trackSideOffset = profile.trackSideOffset;
-    const wakeCount = profile.trackWakeCount + Math.round(turnMagnitude * 3);
-    const samples = getShipWakeTrailSamples(profile.trackWakeSpacing, wakeCount);
-
-    for (let i = 0; i < samples.length; i++) {
-      const sample = samples[i];
-      const sampleTurnMagnitude = Math.min(1, Math.abs(sample.turnAmount));
-      const turnSign = sample.turnAmount === 0 ? 0 : Math.sign(sample.turnAmount);
-      const fade = 1 - i / Math.max(1, wakeCount);
-      const curve = turnSign * sampleTurnMagnitude * Math.min(sample.distance * 0.18, trackSideOffset * 0.95);
-      const centerX = sample.x + sample.perpendicularX * curve * 0.35;
-      const centerZ = sample.z + sample.perpendicularZ * curve * 0.35;
-      const radius = profile.baseTrackRadius * (0.82 + i * 0.12);
-      const insideDamp = 1 - sampleTurnMagnitude * 0.32;
-      const outsideBoost = 1 + sampleTurnMagnitude * 0.78;
-      const sampleSpeed = Math.max(speed * 0.45, sample.speed);
-
-      addWakeDrop(
-        centerX + sample.perpendicularX * (trackSideOffset + curve),
-        centerZ + sample.perpendicularZ * (trackSideOffset + curve),
-        radius,
-        shipTrackWakeStrength * sampleSpeed * fade * (turnSign >= 0 ? outsideBoost : insideDamp)
-      );
-      addWakeDrop(
-        centerX - sample.perpendicularX * (trackSideOffset - curve),
-        centerZ - sample.perpendicularZ * (trackSideOffset - curve),
-        radius,
-        shipTrackWakeStrength * sampleSpeed * fade * (turnSign <= 0 ? outsideBoost : insideDamp)
-      );
-      addWakeDrop(
-        centerX,
-        centerZ,
-        radius * 1.28,
-        wakeTroughStrength * sampleSpeed * fade * (0.26 + sampleTurnMagnitude * 0.18)
-      );
-    }
-  }
-
-  function addShipTurnWake(toPoint, directionX, directionZ, perpendicularX, perpendicularZ, speed, turnAmount) {
-    const turnMagnitude = Math.min(1, Math.abs(turnAmount));
-    if (turnMagnitude < 0.06) return;
-
-    const beam = cargoShip.wakeExtents.beam;
-    const profile = cargoShip.wakeProfile;
-    const fanCount = Math.max(3, Math.round(profile.trackWakeCount * 0.7));
-    const samples = getShipWakeTrailSamples(profile.trackWakeSpacing * 0.85, fanCount);
-
-    for (let i = 0; i < samples.length; i++) {
-      const sample = samples[i];
-      const sampleTurnMagnitude = Math.min(1, Math.abs(sample.turnAmount));
-      if (sampleTurnMagnitude < 0.04) continue;
-
-      const turnSign = Math.sign(sample.turnAmount);
-      const fade = 1 - i / Math.max(1, fanCount);
-      const side = beam * 0.42 + sample.distance * (0.55 + sampleTurnMagnitude * 0.85);
-      const radius = profile.baseTurnRadius * (0.72 + i * 0.14);
-
-      addWakeDrop(
-        sample.x + sample.perpendicularX * side * turnSign,
-        sample.z + sample.perpendicularZ * side * turnSign,
-        radius,
-        shipTurnWakeStrength * Math.max(speed * 0.45, sample.speed) * sampleTurnMagnitude * fade * 0.72
-      );
-    }
-  }
-
-  function addTrailingKelvinWake(vessel, fromPoint, toPoint, directionX, directionZ, perpendicularX, perpendicularZ, speed) {
-    const objectRadius = getVesselWakeRadius(vessel);
-    const originOffset = vessel === cargoShip ? cargoShip.wakeExtents.stern : objectRadius * 0.95;
-    const originX = toPoint.x - directionX * originOffset;
-    const originZ = toPoint.z - directionZ * originOffset;
-    const turnMagnitude = vessel === cargoShip ? Math.min(1, Math.abs(cargoShip.wakeTurnAmount)) : 0;
-    const wakeCount = vessel === cargoShip ? cargoShip.wakeProfile.kelvinWakeCount : wakeDropCount;
-    const trailSpacing = vessel === cargoShip ? cargoShip.wakeProfile.kelvinWakeSpacing : wakeTrailSpacing;
-    const baseRadius = vessel === cargoShip ? cargoShip.wakeProfile.baseTrackRadius : Math.max(0.018, objectRadius * 0.22);
-    const radiusGrowth = vessel === cargoShip ? cargoShip.wakeProfile.baseTrackRadius * 0.16 : Math.max(0.003, objectRadius * 0.035);
-
-    for (let i = 1; i <= wakeCount; i++) {
-      const trail = i * trailSpacing;
-      const spread = trail * wakeSpread;
-      const fade = 1 - (i - 1) / wakeCount;
-      const baseX = originX - directionX * trail;
-      const baseZ = originZ - directionZ * trail;
-      const radius = baseRadius + i * radiusGrowth;
-      const vesselWakeScale = vessel === cargoShip ? 0.35 * (1 - turnMagnitude * 0.45) : 1;
-      const crestStrength = wakeStrength * speed * fade * vesselWakeScale;
-      const troughStrength = wakeTroughStrength * speed * fade * vesselWakeScale;
-
-      addWakeDrop(
-        baseX + perpendicularX * spread,
-        baseZ + perpendicularZ * spread,
-        radius,
-        crestStrength
-      );
-      addWakeDrop(
-        baseX - perpendicularX * spread,
-        baseZ - perpendicularZ * spread,
-        radius,
-        crestStrength
-      );
-      addWakeDrop(
-        baseX,
-        baseZ,
-        radius * 1.15,
-        troughStrength
-      );
-    }
-  }
-
-  function addMovementWake(vessel, fromPoint, toPoint, wakeSpeedOverride = null) {
-    const dx = toPoint.x - fromPoint.x;
-    const dz = toPoint.z - fromPoint.z;
-    const distance = Math.sqrt(dx * dx + dz * dz);
-
-    if (distance < wakeMinMovement) return;
-
-    const directionX = dx / distance;
-    const directionZ = dz / distance;
-    const perpendicularX = -directionZ;
-    const perpendicularZ = directionX;
-    const speed = Math.min(1, distance / 0.08);
-    const movementSpeed = wakeSpeedOverride === null ? speed : wakeSpeedOverride;
-    const wakeSpeed = vessel === cargoShip ? Math.max(movementSpeed, shipWakeMinVisibleSpeed) : speed;
-
-    if (vessel === cargoShip) {
-      const turnAmount = getShipTurnAmount(directionX, directionZ);
-      addShipWakeTrailSample(toPoint, directionX, directionZ, perpendicularX, perpendicularZ, wakeSpeed, turnAmount);
-      addShipBowWake(toPoint, directionX, directionZ, perpendicularX, perpendicularZ, wakeSpeed);
-      addShipTrackWake(toPoint, directionX, directionZ, perpendicularX, perpendicularZ, wakeSpeed, turnAmount);
-      addShipTurnWake(toPoint, directionX, directionZ, perpendicularX, perpendicularZ, wakeSpeed, turnAmount);
-    } else {
-      addBluntObjectWake(vessel, toPoint, directionX, directionZ, perpendicularX, perpendicularZ, speed);
-    }
-
-    if (vessel !== cargoShip) {
-      addTrailingKelvinWake(vessel, fromPoint, toPoint, directionX, directionZ, perpendicularX, perpendicularZ, wakeSpeed);
-    }
   }
 
   function onMouseMove(event) {
@@ -3379,12 +3473,7 @@ class FloatingSphere {
     event.preventDefault();
     const targetPoint = getOffsetWaterPoint(point);
 
-    if (lastWakePoint && draggedVessel !== cargoShip) {
-      addMovementWake(draggedVessel, lastWakePoint, targetPoint);
-    }
-
     draggedVessel.moveToWaterPoint(targetPoint);
-    lastWakePoint = getVesselPoint(draggedVessel);
   }
 
   function onMouseDown(event) {
@@ -3415,7 +3504,6 @@ class FloatingSphere {
       x: point.x - vesselPoint.x,
       z: point.z - vesselPoint.z,
     };
-    lastWakePoint = getVesselPoint(draggedVessel);
   }
 
   function onMouseUp(event) {
@@ -3429,7 +3517,6 @@ class FloatingSphere {
       }
       draggedVessel = null;
       draggedVesselOffset = { x: 0, z: 0 };
-      lastWakePoint = null;
     }
   }
 

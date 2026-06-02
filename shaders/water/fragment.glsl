@@ -17,6 +17,12 @@ uniform float wakeWaveStrength;
 uniform float waterTextureEnabled;
 uniform float waterImageTextureEnabled;
 uniform vec2 waterSize;
+uniform float waterTexel;
+uniform float waterBounceCount;
+uniform vec4 waterBounceRects[16];
+uniform float waterHullMaskCount;
+uniform vec4 waterHullMaskValues[8];
+uniform vec4 waterHullMaskSizes[8];
 uniform float waterOpacity;
 uniform float waterTextureOpacity;
 uniform float waterTextureFrequency;
@@ -30,6 +36,10 @@ uniform float foamMottleEnabled;
 uniform float waterMottleEnabled;
 uniform float extraFoamRippleBoost;
 uniform float reflectionStrength;
+uniform float visualWakeCount;
+uniform vec4 visualWakePoint0[96];
+uniform vec4 visualWakePoint1[96];
+uniform vec4 visualWakeHullSize;
 
 varying vec3 eye;
 varying vec3 pos;
@@ -37,6 +47,55 @@ varying vec4 reflectionCoord;
 varying vec2 waterUv;
 varying vec2 waterWaveUv;
 
+float waterBounceMask(vec2 uv) {
+  float blocked = 0.0;
+
+  for (int i = 0; i < 16; i++) {
+    if (float(i) >= waterBounceCount) {
+      break;
+    }
+
+    vec4 rect = waterBounceRects[i];
+    float inside =
+      step(rect.x, uv.x) *
+      step(uv.x, rect.z) *
+      step(rect.y, uv.y) *
+      step(uv.y, rect.w);
+
+    blocked = max(blocked, inside);
+  }
+
+  vec2 worldPoint = (uv - 0.5) * waterSize;
+  for (int i = 0; i < 8; i++) {
+    if (float(i) >= waterHullMaskCount) {
+      break;
+    }
+
+    vec4 hull = waterHullMaskValues[i];
+    vec4 size = waterHullMaskSizes[i];
+    vec2 forward = normalize(hull.zw);
+    vec2 sideAxis = vec2(-forward.y, forward.x);
+    vec2 deltaPoint = worldPoint - hull.xy;
+    float along = dot(deltaPoint, forward);
+    float side = abs(dot(deltaPoint, sideAxis));
+    float bow = max(size.x, 0.001);
+    float stern = max(size.y, 0.001);
+    float halfBeam = max(size.z, 0.001);
+    float softness = max(size.w, 0.001);
+    float t = clamp((along + stern) / (bow + stern), 0.0, 1.0);
+    float sternRound = smoothstep(0.0, 0.12, t);
+    float bowTaper = 1.0 - smoothstep(0.38, 1.0, t) * 0.985;
+    float beamProfile = sternRound * bowTaper;
+    float localHalfBeam = halfBeam * beamProfile;
+    float alongMask = smoothstep(-stern - softness, -stern + softness, along) *
+      (1.0 - smoothstep(bow - softness, bow + softness, along));
+    float sideMask = 1.0 - smoothstep(localHalfBeam - softness, localHalfBeam + softness, side);
+
+    blocked = max(blocked, alongMask * sideMask);
+  }
+
+  return blocked;
+}
 
 vec3 getSurfaceRayColor(vec3 origin, vec3 ray, vec3 waterColor) {
   vec3 color;
@@ -82,15 +141,140 @@ float noise(vec2 point) {
 }
 
 float foamTexture(vec2 coord, vec2 direction) {
-  vec2 stretchedCoord = coord + direction * 0.035;
-  float broad = noise(stretchedCoord * vec2(32.0, 18.0));
-  float fine = noise(stretchedCoord * vec2(95.0, 70.0));
-  float specks = noise(stretchedCoord * 180.0);
+  vec2 stretchedCoord = coord + direction * 0.055;
+  float broad = noise(stretchedCoord * vec2(54.0, 15.0));
+  float fine = noise(stretchedCoord * vec2(170.0, 42.0));
+  float streaks = noise(stretchedCoord * vec2(22.0, 190.0));
+  float specks = noise(stretchedCoord * 260.0);
 
-  float cells = smoothstep(0.58, 0.64, broad + fine * 0.45);
-  float flecks = smoothstep(0.82, 0.88, specks);
+  float lanes = smoothstep(0.58, 0.74, broad + fine * 0.34 + streaks * 0.22);
+  float flecks = smoothstep(0.89, 0.96, specks);
 
-  return clamp(cells + flecks * 0.45, 0.0, 1.0);
+  return clamp(lanes * 0.95 + flecks * 0.22, 0.0, 1.0);
+}
+
+float visualSegmentWindow(float along, float start, float end, float feather) {
+  return smoothstep(start - feather, start + feather, along) *
+    (1.0 - smoothstep(end - feather, end + feather, along));
+}
+
+float visualRidge(float lateral, float width) {
+  float safeWidth = max(width, 0.001);
+  float scaled = lateral / safeWidth;
+
+  return exp(-scaled * scaled);
+}
+
+float visualWakeArmFoam(
+  vec2 point,
+  vec2 source,
+  vec2 trail,
+  vec2 side,
+  float sideSign,
+  float beam,
+  float length,
+  float speed,
+  float turnAmount,
+  float age,
+  float fade
+) {
+  const float kelvinAngle = 0.3403392;
+  vec2 armDirection = normalize(trail * cos(kelvinAngle) + side * sideSign * sin(kelvinAngle));
+  vec2 armSide = vec2(-armDirection.y, armDirection.x);
+  vec2 deltaPoint = point - source;
+  float along = dot(deltaPoint, armDirection);
+  float lateral = dot(deltaPoint, armSide);
+  float armLength = max(length * 0.92, beam * 2.65);
+  float spread = 1.0 + age * 0.026;
+  float window = visualSegmentWindow(along, -beam * 0.12, armLength, beam * 0.22);
+  float ridge = visualRidge(lateral, beam * 0.052 * spread);
+  float feather = visualRidge(abs(lateral) - beam * 0.105, beam * 0.060 * spread) * 0.34;
+  float longStreak = noise(vec2(along * 31.0 - age * 2.4, lateral * 135.0 + sideSign * 13.0));
+  float brokenEdge = noise(point * 92.0 + armDirection * age * 0.55);
+  float torn = smoothstep(0.48, 0.82, longStreak + brokenEdge * 0.30);
+  float outsideTurnBoost = 1.0 + max(0.0, sideSign * turnAmount) * 0.58;
+
+  return window * max(ridge, feather) * torn * speed * fade * outsideTurnBoost * 0.82;
+}
+
+float visualWakeFoam(vec2 point) {
+  float foam = 0.0;
+  float bow = max(visualWakeHullSize.x, 0.001);
+  float stern = max(visualWakeHullSize.y, 0.001);
+  float beam = max(visualWakeHullSize.z, 0.001);
+  float lifetime = max(visualWakeHullSize.w, 0.001);
+  float length = bow + stern;
+
+  for (int i = 0; i < 96; i++) {
+    if (float(i) >= visualWakeCount) {
+      break;
+    }
+
+    vec4 point0 = visualWakePoint0[i];
+    vec4 point1 = visualWakePoint1[i];
+    float age = time - point1.x;
+
+    if (age < 0.0 || age > lifetime) {
+      continue;
+    }
+
+    vec2 direction = normalize(point0.zw);
+    vec2 trail = -direction;
+    vec2 side = vec2(-direction.y, direction.x);
+    vec2 center = point0.xy;
+    vec2 sternPoint = center - direction * stern;
+    vec2 bowPoint = center + direction * bow;
+    float speed = clamp(point1.y, 0.0, 1.0);
+    float turnAmount = clamp(point1.z, -1.0, 1.0);
+    float fresh = mix(0.82, 1.0, smoothstep(0.0, 0.16, age));
+    float fade = fresh * (1.0 - smoothstep(lifetime * 0.50, lifetime, age));
+
+    vec2 sternDelta = point - sternPoint;
+    float sternAlong = dot(sternDelta, trail);
+    float sternLateral = dot(sternDelta, side);
+    float sternLength = max(length * 1.12, beam * 3.0);
+    float sternWindow = visualSegmentWindow(sternAlong, -beam * 0.20, sternLength, beam * 0.24);
+    float spread = 1.0 + age * 0.030;
+    float centerBand = visualRidge(sternLateral, beam * 0.205 * spread);
+    float shoulderBand = visualRidge(abs(sternLateral) - beam * 0.38, beam * 0.082 * spread);
+    float propLane = visualRidge(sternLateral, beam * 0.115 * spread) *
+      (1.0 - smoothstep(length * 0.38, sternLength, sternAlong));
+    float broadNoise = noise(vec2(sternAlong * 28.0 - age * 2.0, sternLateral * 92.0));
+    float fineNoise = noise(point * 155.0 + trail * age * 0.75);
+    float streakBreak = smoothstep(0.46, 0.80, broadNoise + fineNoise * 0.34);
+    float sternFoam = sternWindow * max(propLane * 0.74, max(centerBand * 0.34, shoulderBand)) *
+      streakBreak * speed * fade;
+
+    foam = max(foam, sternFoam);
+    foam = max(foam, visualWakeArmFoam(
+      point,
+      bowPoint + side * beam * 0.50,
+      trail,
+      side,
+      1.0,
+      beam,
+      length,
+      speed,
+      turnAmount,
+      age,
+      fade
+    ));
+    foam = max(foam, visualWakeArmFoam(
+      point,
+      bowPoint - side * beam * 0.50,
+      trail,
+      side,
+      -1.0,
+      beam,
+      length,
+      speed,
+      turnAmount,
+      age,
+      fade
+    ));
+  }
+
+  return clamp(foam, 0.0, 1.0);
 }
 
 vec4 getPlanarReflection(vec4 projectedCoord, vec2 distortion) {
@@ -259,6 +443,11 @@ vec2 waveLockedTextureCoord(float textureScale, vec2 wakeSlope, float surfaceSlo
 
 void main() {
   vec2 coord = pos.xz / waterSize + 0.5;
+  vec2 stableWaterPoint = (waterUv - 0.5) * waterSize;
+  if (waterBounceMask(waterUv) > 0.5) {
+    discard;
+  }
+
   vec2 foamCoord = coord;
   vec4 info = texture2D(water, coord);
   vec4 heightInfo = info;
@@ -278,7 +467,7 @@ void main() {
     excessHeight
   );
 
-  float texel = 1.0 / 256.0;
+  float texel = waterTexel;
   float leftHeight = texture2D(water, foamCoord - vec2(texel, 0.0)).r * wakeTextureStrength;
   float rightHeight = texture2D(water, foamCoord + vec2(texel, 0.0)).r * wakeTextureStrength;
   float backHeight = texture2D(water, foamCoord - vec2(0.0, texel)).r * wakeTextureStrength;
@@ -289,9 +478,9 @@ void main() {
   float reverseBreak = smoothstep(0.00018, 0.0045, wakeVelocity) * 0.55;
   float leadingFace = max(forwardBreak, reverseBreak);
   float crestBias = smoothstep(-0.009, 0.009, wakeHeight);
-  float slopeBreak = smoothstep(0.00055, 0.0065, heightSlope);
-  float directionalBreak = clamp(max(leadingFace * crestBias, slopeBreak * leadingFace * 0.75), 0.0, 1.0);
-  float rippleEnergy = abs(wakeHeight) + heightSlope * 1.35;
+  float slopeBreak = smoothstep(0.0012, 0.0078, heightSlope);
+  float directionalBreak = clamp(max(leadingFace * crestBias, slopeBreak * leadingFace * 0.9), 0.0, 1.0);
+  float rippleEnergy = abs(wakeHeight) + heightSlope * 1.75;
   float breakingFoam = smoothstep(
     foamHeightThreshold * 0.8,
     foamHeightThreshold + foamHeightSoftness,
@@ -299,12 +488,14 @@ void main() {
   );
 
   float heightFoam = clamp(max(crestFoam, breakingFoam) * foamFromHeightStrength * directionalBreak, 0.0, 1.0);
-  float rippleFoam = smoothstep(0.00055, 0.010, rippleEnergy) * directionalBreak;
-  float sharpRippleFoam = smoothstep(0.00045, 0.0065, heightSlope) * smoothstep(0.00035, 0.009, abs(wakeHeight)) * directionalBreak;
-  float extraRippleFoam = max(rippleFoam * 0.92, sharpRippleFoam);
-  float wakeDisturbance = abs(wakeHeight) + heightSlope * 2.4 + abs(wakeVelocity) * 1.8;
-  float wakeCrestEnergy = max(excessHeight, abs(wakeHeight) * 0.65) + heightSlope * 1.2;
-  float objectWakeFoam = smoothstep(0.0015, 0.014, wakeDisturbance) * smoothstep(0.001, 0.02, wakeCrestEnergy);
+  float rippleFoam = smoothstep(0.0015, 0.012, rippleEnergy) * directionalBreak;
+  float sharpRippleFoam = smoothstep(0.0011, 0.0075, heightSlope) * smoothstep(0.0008, 0.010, abs(wakeHeight)) * directionalBreak;
+  float extraRippleFoam = max(rippleFoam * 0.7, sharpRippleFoam);
+  float wakeDisturbance = abs(wakeHeight) + heightSlope * 2.85 + abs(wakeVelocity) * 1.55;
+  float wakeCrestEnergy = max(excessHeight, abs(wakeHeight) * 0.6) + heightSlope * 1.55;
+  float tightWakeCore = smoothstep(0.0022, 0.016, wakeDisturbance) * smoothstep(0.0024, 0.021, wakeCrestEnergy);
+  float steepWakeEdge = smoothstep(0.0014, 0.0085, heightSlope);
+  float objectWakeFoam = tightWakeCore * mix(0.28, 1.0, steepWakeEdge);
   float objectFoam = clamp(
     max(heightFoam, objectWakeFoam) + extraRippleFoam * extraFoamRippleBoost * extraFoamEnabled,
     0.0,
@@ -320,12 +511,18 @@ void main() {
   float waveFoamMask = clamp(directionalOceanFoam * waveFoamEnabled, 0.0, 1.0);
 
   float wakeFoamMask = clamp(max(objectFoam, objectWakeFoam * objectFoamEnabled), 0.0, 1.0);
-  float foamMask = clamp(max(wakeFoamMask, waveFoamMask), 0.0, 1.0);
+  float visualWakeFoamMask = visualWakeFoam(stableWaterPoint) * objectFoamEnabled;
+  float foamMask = clamp(max(max(wakeFoamMask, visualWakeFoamMask), waveFoamMask), 0.0, 1.0);
   float foamPattern = foamTexture(foamCoord + time * 0.015, info.ba * waterTextureEnabled + vec2(heightSlope + oceanSlope));
-  float textureMask = mix(1.0, mix(0.82, 1.0, foamPattern), foamMottleEnabled);
-  float foam = clamp(foamMask * textureMask * 1.12, 0.0, 1.0);
+  float textureMask = mix(1.0, mix(0.58, 1.0, foamPattern), foamMottleEnabled);
+  float foam = clamp(pow(foamMask, 1.28) * textureMask * 1.28, 0.0, 1.0);
 
   vec3 normal = normalize(oceanNormal(pos.xz) + vec3(info.b, 0.0, info.a) * wakeTextureStrength * 1.4);
+  vec2 visualRoughness = vec2(
+    noise(stableWaterPoint * 115.0 + vec2(time * 0.8, -time * 0.35)) - 0.5,
+    noise(stableWaterPoint * 138.0 + vec2(-time * 0.42, time * 0.7)) - 0.5
+  ) * visualWakeFoamMask * 0.36;
+  normal = normalize(normal + vec3(visualRoughness.x, 0.0, visualRoughness.y));
   float waterPattern = foamTexture(coord + vec2(time * 0.006, -time * 0.004), info.ba + vec2(oceanSlope, heightSlope));
   float waterFinePattern = noise(coord * 140.0 + vec2(-time * 0.018, time * 0.012));
   vec2 mottleNormal = vec2(waterPattern - 0.5, waterFinePattern - 0.5) * 0.11 * waterMottleEnabled;

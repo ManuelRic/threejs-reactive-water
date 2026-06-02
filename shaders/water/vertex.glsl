@@ -11,6 +11,10 @@ uniform float fftWavesEnabled;
 uniform float wakeWaveStrength;
 uniform float waterTextureEnabled;
 uniform vec2 waterSize;
+uniform float visualWakeCount;
+uniform vec4 visualWakePoint0[96];
+uniform vec4 visualWakePoint1[96];
+uniform vec4 visualWakeHullSize;
 
 attribute vec3 position;
 
@@ -109,6 +113,129 @@ vec3 oceanDisplacement(vec2 point) {
   return mix(gerstnerOceanDisplacement(point), spectralOceanDisplacement(point), fftWavesEnabled);
 }
 
+float visualSegmentWindow(float along, float start, float end, float feather) {
+  return smoothstep(start - feather, start + feather, along) *
+    (1.0 - smoothstep(end - feather, end + feather, along));
+}
+
+float visualRidge(float lateral, float width) {
+  float safeWidth = max(width, 0.001);
+  float scaled = lateral / safeWidth;
+
+  return exp(-scaled * scaled);
+}
+
+float visualWakeArmHeight(
+  vec2 point,
+  vec2 source,
+  vec2 trail,
+  vec2 side,
+  float sideSign,
+  float beam,
+  float length,
+  float speed,
+  float turnAmount,
+  float age,
+  float fade
+) {
+  const float kelvinAngle = 0.3403392;
+  vec2 armDirection = normalize(trail * cos(kelvinAngle) + side * sideSign * sin(kelvinAngle));
+  vec2 armSide = vec2(-armDirection.y, armDirection.x);
+  vec2 deltaPoint = point - source;
+  float along = dot(deltaPoint, armDirection);
+  float lateral = dot(deltaPoint, armSide);
+  float armLength = max(length * 0.78, beam * 2.25);
+  float spread = 1.0 + age * 0.028;
+  float window = visualSegmentWindow(along, -beam * 0.12, armLength, beam * 0.22);
+  float ridge = visualRidge(lateral, beam * 0.060 * spread);
+  float shoulder = visualRidge(abs(lateral) - beam * 0.12, beam * 0.075 * spread) * 0.38;
+  float outsideTurnBoost = 1.0 + max(0.0, sideSign * turnAmount) * 0.45;
+  float phase = along * 53.0 - age * 6.2 + sideSign * 0.7;
+  float secondary = sin(along * 27.0 + abs(lateral) * 22.0 - age * 4.5);
+
+  return (sin(phase) * 0.0048 + secondary * 0.0022) *
+    speed * fade * window * max(ridge, shoulder) * outsideTurnBoost;
+}
+
+float visualWakeHeight(vec2 point) {
+  float height = 0.0;
+  float bow = max(visualWakeHullSize.x, 0.001);
+  float stern = max(visualWakeHullSize.y, 0.001);
+  float beam = max(visualWakeHullSize.z, 0.001);
+  float lifetime = max(visualWakeHullSize.w, 0.001);
+  float length = bow + stern;
+
+  for (int i = 0; i < 96; i++) {
+    if (float(i) >= visualWakeCount) {
+      break;
+    }
+
+    vec4 point0 = visualWakePoint0[i];
+    vec4 point1 = visualWakePoint1[i];
+    float age = time - point1.x;
+
+    if (age < 0.0 || age > lifetime) {
+      continue;
+    }
+
+    vec2 direction = normalize(point0.zw);
+    vec2 trail = -direction;
+    vec2 side = vec2(-direction.y, direction.x);
+    vec2 center = point0.xy;
+    vec2 sternPoint = center - direction * stern;
+    vec2 bowPoint = center + direction * bow;
+    float speed = clamp(point1.y, 0.0, 1.0);
+    float turnAmount = clamp(point1.z, -1.0, 1.0);
+    float fresh = mix(0.72, 1.0, smoothstep(0.0, 0.22, age));
+    float fade = fresh * (1.0 - smoothstep(lifetime * 0.62, lifetime, age));
+
+    vec2 sternDelta = point - sternPoint;
+    float sternAlong = dot(sternDelta, trail);
+    float sternLateral = dot(sternDelta, side);
+    float sternLength = max(length * 0.82, beam * 2.2);
+    float sternWindow = visualSegmentWindow(sternAlong, -beam * 0.20, sternLength, beam * 0.24);
+    float spread = 1.0 + age * 0.030;
+    float centerWash = visualRidge(sternLateral, beam * 0.28 * spread);
+    float shoulderWash = visualRidge(abs(sternLateral) - beam * 0.42, beam * 0.105 * spread);
+    float sternPhase = sternAlong * 46.0 + sternLateral * 9.0 - age * 7.0;
+    float boilPhase = sternAlong * 24.0 - abs(sternLateral) * 18.0 - age * 4.8;
+    float sternLift = sin(sternPhase) * 0.0038 + sin(boilPhase) * 0.0024;
+    float sternDepression = -0.0028 * centerWash;
+
+    height += (sternLift * max(centerWash, shoulderWash * 0.72) + sternDepression) *
+      speed * fade * sternWindow;
+
+    height += visualWakeArmHeight(
+      point,
+      bowPoint + side * beam * 0.50,
+      trail,
+      side,
+      1.0,
+      beam,
+      length,
+      speed,
+      turnAmount,
+      age,
+      fade
+    );
+    height += visualWakeArmHeight(
+      point,
+      bowPoint - side * beam * 0.50,
+      trail,
+      side,
+      -1.0,
+      beam,
+      length,
+      speed,
+      turnAmount,
+      age,
+      fade
+    );
+  }
+
+  return clamp(height, -0.065, 0.065);
+}
+
 
 void main() {
   waterUv = position.xy / waterSize + 0.5;
@@ -117,6 +244,7 @@ void main() {
   vec3 ocean = oceanDisplacement(pos.xz);
   pos.xz += ocean.xz;
   pos.y += ocean.y + info.r * wakeWaveStrength * waterTextureEnabled;
+  pos.y += visualWakeHeight(position.xy) * waterTextureEnabled;
   waterWaveUv = pos.xz / waterSize + 0.5;
   reflectionCoord = reflectionTextureMatrix * vec4(pos, 1.0);
 
