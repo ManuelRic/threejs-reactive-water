@@ -65,11 +65,14 @@ const waterHalfSize = new THREE.Vector2(waterHalfWidth, waterHalfLength);
 const vesselMovementBounds = Math.min(waterHalfWidth, waterHalfLength) * 0.98;
 const maxWaterBounceObjects = 16;
 const maxWaterHullMasks = 8;
-const waterSimulationResolution = 512;
-const waterRenderSegmentsPerUnit = 80;
+const waterSimulationResolution = 384;
+const waterRenderSegmentsPerUnit = 44;
 const waterRenderSegmentsX = Math.max(320, Math.round(waterWidth * waterRenderSegmentsPerUnit));
 const waterRenderSegmentsZ = Math.max(320, Math.round(waterLength * waterRenderSegmentsPerUnit));
-const objectPressureFieldResolution = 256;
+const waterCausticSegmentsPerUnit = 22;
+const waterCausticSegmentsX = Math.max(96, Math.round(waterWidth * waterCausticSegmentsPerUnit));
+const waterCausticSegmentsZ = Math.max(96, Math.round(waterLength * waterCausticSegmentsPerUnit));
+const objectPressureFieldResolution = 192;
 
 // Lower values make wake waves fade sooner. Higher values let them travel farther.
 let rippleDistance = Number(rippleLengthSlider.value);
@@ -123,9 +126,9 @@ const objectWaterDivergentStrength = 0.086;
 const objectWaterKelvinAngle = 19.5 * Math.PI / 180;
 const objectWaterFullWakeVelocity = 0.32;
 const objectWaterEdgeFadeDistance = 0.24;
-const wakeHistoryLifetime = 7.5;
-const wakeHistoryMaxPoints = 90;
-const wakeHistoryMinSampleDistance = 0.018;
+const wakeHistoryLifetime = 5.5;
+const wakeHistoryMaxPoints = 48;
+const wakeHistoryMinSampleDistance = 0.026;
 const wakeHistoryFoamStrength = 0.058;
 const wakeHistoryKelvinStrength = 0.036;
 const wakeHistoryCentralStrength = 0.048;
@@ -133,10 +136,10 @@ const wakeTurnSensitivity = 5.4;
 const wakeEmitterSternCenter = 'stern-center';
 const wakeEmitterBowLeft = 'bow-left';
 const wakeEmitterBowRight = 'bow-right';
-const visualWakeMaxPoints = 96;
-const visualWakeLifetime = 9.0;
+const visualWakeMaxPoints = 48;
+const visualWakeLifetime = 6.5;
 const visualWakeMinSpeed = 0.035;
-const visualWakeMinSampleDistance = 0.016;
+const visualWakeMinSampleDistance = 0.026;
 const waveEmitterTypeLine = 'line';
 const waveEmitterTypePoint = 'point';
 const waveEmitters = [
@@ -834,6 +837,7 @@ loadFile('shaders/utils.glsl').then((utils) => {
 
     constructor() {
       this.geometry = new THREE.PlaneBufferGeometry(waterWidth, waterLength, waterRenderSegmentsX, waterRenderSegmentsZ);
+      this.causticGeometry = new THREE.PlaneBufferGeometry(waterWidth, waterLength, waterCausticSegmentsX, waterCausticSegmentsZ);
 
       const shadersPromises = [
         loadFile('shaders/water/vertex.glsl'),
@@ -857,6 +861,7 @@ loadFile('shaders/utils.glsl').then((utils) => {
               waterOpacity: { value: waterOpacity },
               waterTextureOpacity: { value: waterTextureOpacity },
               waterTextureFrequency: { value: waterTextureFrequency },
+              worldCameraPosition: { value: camera.position.clone() },
               time: { value: 0 },
               oceanWaveStrength: { value: oceanWaveStrength },
               oceanWaveFrequency: { value: oceanWaveFrequency },
@@ -895,12 +900,14 @@ loadFile('shaders/utils.glsl').then((utils) => {
         });
 
         this.mesh = new THREE.Mesh(this.geometry, this.material);
+        this.mesh.frustumCulled = false;
       });
     }
 
     draw(renderer, waterTexture, causticsTexture, time) {
       this.material.uniforms['water'].value = waterTexture;
       this.material.uniforms['causticTex'].value = causticsTexture;
+      this.material.uniforms['worldCameraPosition'].value.copy(camera.position);
       this.material.uniforms['time'].value = time;
       this.material.uniforms['waterBounceCount'].value = waterBounceRectCount;
       this.material.uniforms['waterBounceRects'].value = waterBounceRectValues;
@@ -909,12 +916,9 @@ loadFile('shaders/utils.glsl').then((utils) => {
       this.material.uniforms['waterHullMaskSizes'].value = waterHullMaskSizes;
       updateVisualWakeUniforms(this.material);
 
-      this.material.side = THREE.FrontSide;
-      this.material.uniforms['underwater'].value = true;
-      renderer.render(this.mesh, camera);
-
-      this.material.side = THREE.BackSide;
-      this.material.uniforms['underwater'].value = false;
+      const underwaterView = camera.position.y < 0;
+      this.material.side = underwaterView ? THREE.FrontSide : THREE.BackSide;
+      this.material.uniforms['underwater'].value = underwaterView;
       renderer.render(this.mesh, camera);
     }
 
@@ -1171,7 +1175,7 @@ loadFile('shaders/utils.glsl').then((utils) => {
       objectScene.add(this.mesh);
       registerWaterBounceObject(this.mesh);
       registerObjectWaterInteraction(this.mesh, {
-        sampleLimit: 640,
+        sampleLimit: 260,
         radiusScale: 1.05,
         strengthScale: 0.82,
         maxWakeLength: this.size,
@@ -1232,7 +1236,7 @@ class FloatingSphere {
       this.mesh.position.set(-0.5, this.radius * 0.25, 0.3);
       objectScene.add(this.mesh);
       registerObjectWaterInteraction(this.mesh, {
-        sampleLimit: 900,
+        sampleLimit: 320,
         radiusScale: 1.25,
         strengthScale: 0.78,
         maxWakeLength: this.radius * 2,
@@ -1593,7 +1597,7 @@ class FloatingSphere {
 
   const waterSimulation = new WaterSimulation();
   const water = new Water();
-  const caustics = new Caustics(water.geometry);
+  const caustics = new Caustics(water.causticGeometry);
   const pool = new Pool();
   const floorShadowReceiver = new FloorShadowReceiver();
   const waterVolume = new WaterVolume();

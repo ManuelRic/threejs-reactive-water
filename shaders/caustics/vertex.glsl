@@ -90,7 +90,11 @@ float spectralOceanHeight(vec2 point) {
 }
 
 float oceanHeight(vec2 point) {
-  return mix(gerstnerOceanHeight(point), spectralOceanHeight(point), fftWavesEnabled);
+  if (fftWavesEnabled > 0.5) {
+    return spectralOceanHeight(point);
+  }
+
+  return gerstnerOceanHeight(point);
 }
 
 float isWaterBounce(vec2 point) {

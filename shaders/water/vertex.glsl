@@ -1,7 +1,9 @@
 uniform mat4 projectionMatrix;
-uniform mat4 modelViewMatrix;
+uniform mat4 viewMatrix;
+uniform mat4 modelMatrix;
 uniform sampler2D water;
 uniform mat4 reflectionTextureMatrix;
+uniform vec3 worldCameraPosition;
 uniform float time;
 uniform float oceanWaveStrength;
 uniform float oceanWaveFrequency;
@@ -12,8 +14,8 @@ uniform float wakeWaveStrength;
 uniform float waterTextureEnabled;
 uniform vec2 waterSize;
 uniform float visualWakeCount;
-uniform vec4 visualWakePoint0[96];
-uniform vec4 visualWakePoint1[96];
+uniform vec4 visualWakePoint0[48];
+uniform vec4 visualWakePoint1[48];
 uniform vec4 visualWakeHullSize;
 
 attribute vec3 position;
@@ -23,6 +25,7 @@ varying vec3 pos;
 varying vec4 reflectionCoord;
 varying vec2 waterUv;
 varying vec2 waterWaveUv;
+varying float visualWakeFoamAmount;
 
 struct OceanWave {
   vec2 direction;
@@ -110,7 +113,11 @@ vec3 spectralOceanDisplacement(vec2 point) {
 }
 
 vec3 oceanDisplacement(vec2 point) {
-  return mix(gerstnerOceanDisplacement(point), spectralOceanDisplacement(point), fftWavesEnabled);
+  if (fftWavesEnabled > 0.5) {
+    return spectralOceanDisplacement(point);
+  }
+
+  return gerstnerOceanDisplacement(point);
 }
 
 float visualSegmentWindow(float along, float start, float end, float feather) {
@@ -125,7 +132,7 @@ float visualRidge(float lateral, float width) {
   return exp(-scaled * scaled);
 }
 
-float visualWakeArmHeight(
+vec2 visualWakeArmInfo(
   vec2 point,
   vec2 source,
   vec2 trail,
@@ -152,20 +159,23 @@ float visualWakeArmHeight(
   float outsideTurnBoost = 1.0 + max(0.0, sideSign * turnAmount) * 0.45;
   float phase = along * 53.0 - age * 6.2 + sideSign * 0.7;
   float secondary = sin(along * 27.0 + abs(lateral) * 22.0 - age * 4.5);
+  float envelope = window * max(ridge, shoulder) * outsideTurnBoost;
+  float height = (sin(phase) * 0.0048 + secondary * 0.0022) * speed * fade * envelope;
+  float foam = window * max(ridge * 0.78, shoulder) * speed * fade * outsideTurnBoost * 0.72;
 
-  return (sin(phase) * 0.0048 + secondary * 0.0022) *
-    speed * fade * window * max(ridge, shoulder) * outsideTurnBoost;
+  return vec2(height, foam);
 }
 
-float visualWakeHeight(vec2 point) {
+vec2 visualWakeInfo(vec2 point) {
   float height = 0.0;
+  float foam = 0.0;
   float bow = max(visualWakeHullSize.x, 0.001);
   float stern = max(visualWakeHullSize.y, 0.001);
   float beam = max(visualWakeHullSize.z, 0.001);
   float lifetime = max(visualWakeHullSize.w, 0.001);
   float length = bow + stern;
 
-  for (int i = 0; i < 96; i++) {
+  for (int i = 0; i < 48; i++) {
     if (float(i) >= visualWakeCount) {
       break;
     }
@@ -197,6 +207,8 @@ float visualWakeHeight(vec2 point) {
     float spread = 1.0 + age * 0.030;
     float centerWash = visualRidge(sternLateral, beam * 0.28 * spread);
     float shoulderWash = visualRidge(abs(sternLateral) - beam * 0.42, beam * 0.105 * spread);
+    float propFoam = centerWash * (1.0 - smoothstep(length * 0.42, sternLength, sternAlong));
+    float sternFoam = sternWindow * max(propFoam * 0.72, max(centerWash * 0.34, shoulderWash)) * speed * fade;
     float sternPhase = sternAlong * 46.0 + sternLateral * 9.0 - age * 7.0;
     float boilPhase = sternAlong * 24.0 - abs(sternLateral) * 18.0 - age * 4.8;
     float sternLift = sin(sternPhase) * 0.0038 + sin(boilPhase) * 0.0024;
@@ -204,8 +216,9 @@ float visualWakeHeight(vec2 point) {
 
     height += (sternLift * max(centerWash, shoulderWash * 0.72) + sternDepression) *
       speed * fade * sternWindow;
+    foam = max(foam, sternFoam);
 
-    height += visualWakeArmHeight(
+    vec2 rightArm = visualWakeArmInfo(
       point,
       bowPoint + side * beam * 0.50,
       trail,
@@ -218,7 +231,10 @@ float visualWakeHeight(vec2 point) {
       age,
       fade
     );
-    height += visualWakeArmHeight(
+    height += rightArm.x;
+    foam = max(foam, rightArm.y);
+
+    vec2 leftArm = visualWakeArmInfo(
       point,
       bowPoint - side * beam * 0.50,
       trail,
@@ -231,29 +247,30 @@ float visualWakeHeight(vec2 point) {
       age,
       fade
     );
+    height += leftArm.x;
+    foam = max(foam, leftArm.y);
   }
 
-  return clamp(height, -0.065, 0.065);
+  return vec2(clamp(height, -0.065, 0.065), clamp(foam, 0.0, 1.0));
 }
 
 
 void main() {
-  waterUv = position.xy / waterSize + 0.5;
+  vec4 worldPosition = modelMatrix * vec4(position.x, 0.0, position.y, 1.0);
+  vec2 worldPoint = worldPosition.xz;
+
+  waterUv = worldPoint / waterSize + 0.5;
   vec4 info = texture2D(water, waterUv);
-  pos = position.xzy;
-  vec3 ocean = oceanDisplacement(pos.xz);
+  pos = worldPosition.xyz;
+  vec3 ocean = oceanDisplacement(worldPoint);
+  vec2 wakeInfo = visualWakeInfo(worldPoint);
   pos.xz += ocean.xz;
   pos.y += ocean.y + info.r * wakeWaveStrength * waterTextureEnabled;
-  pos.y += visualWakeHeight(position.xy) * waterTextureEnabled;
+  pos.y += wakeInfo.x * waterTextureEnabled;
+  visualWakeFoamAmount = wakeInfo.y * waterTextureEnabled;
   waterWaveUv = pos.xz / waterSize + 0.5;
   reflectionCoord = reflectionTextureMatrix * vec4(pos, 1.0);
+  eye = worldCameraPosition;
 
-  vec3 axis_x = vec3(modelViewMatrix[0].x, modelViewMatrix[0].y, modelViewMatrix[0].z);
-  vec3 axis_y = vec3(modelViewMatrix[1].x, modelViewMatrix[1].y, modelViewMatrix[1].z);
-  vec3 axis_z = vec3(modelViewMatrix[2].x, modelViewMatrix[2].y, modelViewMatrix[2].z);
-  vec3 offset = vec3(modelViewMatrix[3].x, modelViewMatrix[3].y, modelViewMatrix[3].z);
-
-  eye = vec3(dot(-offset, axis_x), dot(-offset, axis_y), dot(-offset, axis_z));
-
-  gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
+  gl_Position = projectionMatrix * viewMatrix * vec4(pos, 1.0);
 }
