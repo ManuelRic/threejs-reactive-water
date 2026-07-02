@@ -132,6 +132,10 @@ float visualRidge(float lateral, float width) {
   return exp(-scaled * scaled);
 }
 
+float visualWakeNoise(vec2 point) {
+  return fract(sin(dot(point, vec2(41.27, 289.31))) * 43758.5453123);
+}
+
 vec2 visualWakeArmInfo(
   vec2 point,
   vec2 source,
@@ -151,17 +155,20 @@ vec2 visualWakeArmInfo(
   vec2 deltaPoint = point - source;
   float along = dot(deltaPoint, armDirection);
   float lateral = dot(deltaPoint, armSide);
-  float armLength = max(length * 0.78, beam * 2.25);
-  float spread = 1.0 + age * 0.028;
-  float window = visualSegmentWindow(along, -beam * 0.12, armLength, beam * 0.22);
-  float ridge = visualRidge(lateral, beam * 0.060 * spread);
-  float shoulder = visualRidge(abs(lateral) - beam * 0.12, beam * 0.075 * spread) * 0.38;
-  float outsideTurnBoost = 1.0 + max(0.0, sideSign * turnAmount) * 0.45;
-  float phase = along * 53.0 - age * 6.2 + sideSign * 0.7;
-  float secondary = sin(along * 27.0 + abs(lateral) * 22.0 - age * 4.5);
-  float envelope = window * max(ridge, shoulder) * outsideTurnBoost;
-  float height = (sin(phase) * 0.0048 + secondary * 0.0022) * speed * fade * envelope;
-  float foam = window * max(ridge * 0.78, shoulder) * speed * fade * outsideTurnBoost * 0.72;
+  float armLength = max(length * 1.22, beam * 3.3);
+  float spread = 1.0 + age * 0.060;
+  float window = visualSegmentWindow(along, -beam * 0.08, armLength, beam * 0.34);
+  float ridge = visualRidge(lateral, beam * 0.052 * spread);
+  float shoulder = visualRidge(abs(lateral) - beam * 0.145 * spread, beam * 0.078 * spread) * 0.44;
+  float outerFeather = 1.0 - smoothstep(armLength * 0.62, armLength, along);
+  float outsideTurnBoost = 1.0 + max(0.0, sideSign * turnAmount) * 0.62;
+  float phase = along * 48.0 - age * 6.8 + sideSign * 0.7;
+  float secondary = sin(along * 23.0 + abs(lateral) * 27.0 - age * 4.7);
+  float crossRipple = sin(along * 73.0 - abs(lateral) * 41.0 - age * 8.1);
+  float speckle = mix(0.72, 1.12, visualWakeNoise(point * 95.0 + vec2(age)));
+  float envelope = window * max(ridge, shoulder) * outsideTurnBoost * outerFeather;
+  float height = (sin(phase) * 0.0064 + secondary * 0.0028 + crossRipple * 0.0014) * speed * fade * envelope;
+  float foam = window * max(ridge * 0.72, shoulder) * speed * fade * outsideTurnBoost * speckle * 0.94;
 
   return vec2(height, foam);
 }
@@ -196,23 +203,25 @@ vec2 visualWakeInfo(vec2 point) {
     vec2 bowPoint = center + direction * bow;
     float speed = clamp(point1.y, 0.0, 1.0);
     float turnAmount = clamp(point1.z, -1.0, 1.0);
-    float fresh = mix(0.72, 1.0, smoothstep(0.0, 0.22, age));
-    float fade = fresh * (1.0 - smoothstep(lifetime * 0.62, lifetime, age));
+    float fresh = mix(0.58, 1.0, smoothstep(0.0, 0.32, age));
+    float fade = fresh * (1.0 - smoothstep(lifetime * 0.58, lifetime, age));
 
     vec2 sternDelta = point - sternPoint;
     float sternAlong = dot(sternDelta, trail);
     float sternLateral = dot(sternDelta, side);
-    float sternLength = max(length * 0.82, beam * 2.2);
-    float sternWindow = visualSegmentWindow(sternAlong, -beam * 0.20, sternLength, beam * 0.24);
-    float spread = 1.0 + age * 0.030;
-    float centerWash = visualRidge(sternLateral, beam * 0.28 * spread);
-    float shoulderWash = visualRidge(abs(sternLateral) - beam * 0.42, beam * 0.105 * spread);
-    float propFoam = centerWash * (1.0 - smoothstep(length * 0.42, sternLength, sternAlong));
-    float sternFoam = sternWindow * max(propFoam * 0.72, max(centerWash * 0.34, shoulderWash)) * speed * fade;
-    float sternPhase = sternAlong * 46.0 + sternLateral * 9.0 - age * 7.0;
-    float boilPhase = sternAlong * 24.0 - abs(sternLateral) * 18.0 - age * 4.8;
-    float sternLift = sin(sternPhase) * 0.0038 + sin(boilPhase) * 0.0024;
-    float sternDepression = -0.0028 * centerWash;
+    float sternLength = max(length * 1.18, beam * 3.0);
+    float sternWindow = visualSegmentWindow(sternAlong, -beam * 0.20, sternLength, beam * 0.34);
+    float spread = 1.0 + age * 0.072;
+    float centerWash = visualRidge(sternLateral, beam * 0.31 * spread);
+    float narrowWash = visualRidge(sternLateral, beam * 0.115 * spread);
+    float shoulderWash = visualRidge(abs(sternLateral) - beam * 0.46 * spread, beam * 0.125 * spread);
+    float propFoam = centerWash * (1.0 - smoothstep(length * 0.55, sternLength, sternAlong));
+    float boilNoise = visualWakeNoise(point * 120.0 + vec2(age * 3.0, -age * 1.7));
+    float sternFoam = sternWindow * max(propFoam * 0.86, max(centerWash * 0.38, shoulderWash)) * speed * fade * mix(0.76, 1.18, boilNoise);
+    float sternPhase = sternAlong * 42.0 + sternLateral * 10.0 - age * 7.6;
+    float boilPhase = sternAlong * 22.0 - abs(sternLateral) * 20.0 - age * 5.2;
+    float sternLift = sin(sternPhase) * 0.0049 + sin(boilPhase) * 0.0032;
+    float sternDepression = -0.0046 * narrowWash;
 
     height += (sternLift * max(centerWash, shoulderWash * 0.72) + sternDepression) *
       speed * fade * sternWindow;

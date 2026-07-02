@@ -81,9 +81,20 @@ void main() {
   }
 
   /* update the normal */
-  vec3 dx = vec3(waterTexelSize.x, sampleHeight(vec2(coord.x + delta.x, coord.y), info.r) - info.r, 0.0);
-  vec3 dy = vec3(0.0, sampleHeight(vec2(coord.x, coord.y + delta.y), info.r) - info.r, waterTexelSize.y);
-  info.ba = normalize(cross(dy, dx)).xz;
+  float left = sampleHeight(vec2(coord.x - delta.x, coord.y), info.r);
+  float right = sampleHeight(vec2(coord.x + delta.x, coord.y), info.r);
+  float back = sampleHeight(vec2(coord.x, coord.y - delta.y), info.r);
+  float front = sampleHeight(vec2(coord.x, coord.y + delta.y), info.r);
+  float backLeft = sampleHeight(coord - delta, info.r);
+  float frontRight = sampleHeight(coord + delta, info.r);
+  float frontLeft = sampleHeight(coord + vec2(-delta.x, delta.y), info.r);
+  float backRight = sampleHeight(coord + vec2(delta.x, -delta.y), info.r);
+  vec2 slope = vec2(
+    (left - right) * 0.72 + (backLeft + frontLeft - backRight - frontRight) * 0.14,
+    (back - front) * 0.72 + (backLeft + backRight - frontLeft - frontRight) * 0.14
+  );
+
+  info.ba = normalize(vec3(slope.x, max(waterTexelSize.x, waterTexelSize.y) * 2.0, slope.y)).xz;
 
   gl_FragColor = info;
 }

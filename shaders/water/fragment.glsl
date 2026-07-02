@@ -137,17 +137,32 @@ float noise(vec2 point) {
   );
 }
 
+float fbm(vec2 point) {
+  float value = 0.0;
+  float amplitude = 0.5;
+  mat2 rotate = mat2(0.80, -0.60, 0.60, 0.80);
+
+  for (int i = 0; i < 4; i++) {
+    value += noise(point) * amplitude;
+    point = rotate * point * 2.02 + vec2(17.31);
+    amplitude *= 0.5;
+  }
+
+  return value;
+}
+
 float foamTexture(vec2 coord, vec2 direction) {
   vec2 stretchedCoord = coord + direction * 0.055;
-  float broad = noise(stretchedCoord * vec2(54.0, 15.0));
-  float fine = noise(stretchedCoord * vec2(170.0, 42.0));
-  float streaks = noise(stretchedCoord * vec2(22.0, 190.0));
-  float specks = noise(stretchedCoord * 260.0);
+  float broad = fbm(stretchedCoord * vec2(38.0, 12.0));
+  float fine = noise(stretchedCoord * vec2(190.0, 48.0));
+  float streaks = noise(stretchedCoord * vec2(18.0, 230.0));
+  float specks = noise(stretchedCoord * 340.0);
 
-  float lanes = smoothstep(0.58, 0.74, broad + fine * 0.34 + streaks * 0.22);
-  float flecks = smoothstep(0.89, 0.96, specks);
+  float lanes = smoothstep(0.54, 0.76, broad + fine * 0.32 + streaks * 0.28);
+  float holes = smoothstep(0.20, 0.58, fbm(stretchedCoord * vec2(14.0, 6.0) + vec2(9.4)));
+  float flecks = smoothstep(0.86, 0.965, specks);
 
-  return clamp(lanes * 0.95 + flecks * 0.22, 0.0, 1.0);
+  return clamp(lanes * holes * 1.05 + flecks * 0.24, 0.0, 1.0);
 }
 
 vec4 getPlanarReflection(vec4 projectedCoord, vec2 distortion) {
@@ -284,6 +299,26 @@ vec3 oceanNormal(vec2 point) {
   ));
 }
 
+vec3 capillaryNormal(vec2 point, float wakeAmount, float surfaceSlope) {
+  vec2 slow = point * 42.0 + vec2(time * 0.42, -time * 0.18) * oceanWaveSpeed;
+  vec2 fast = point * 118.0 + vec2(-time * 0.88, time * 0.61) * oceanWaveSpeed;
+  vec2 crossed = point * 176.0 + vec2(time * 1.34, time * 0.27) * oceanWaveSpeed;
+  vec2 ripple = vec2(
+    fbm(slow) - 0.5,
+    fbm(fast) - 0.5
+  );
+
+  ripple += vec2(
+    noise(crossed) - 0.5,
+    noise(crossed.yx + vec2(4.7)) - 0.5
+  ) * 0.44;
+
+  float strength = (0.020 + oceanWaveStrength * 0.55 + surfaceSlope * 0.72) * waterTextureEnabled;
+  strength += wakeAmount * 0.18;
+
+  return vec3(ripple.x * strength, 0.0, ripple.y * strength);
+}
+
 vec2 waterTextureFlow(vec2 point) {
   float strength = oceanWaveStrength * oceanWaveSharpness;
   vec2 flow = vec2(0.0);
@@ -393,33 +428,37 @@ void main() {
   float visualWakeFoamMask = clamp(visualWakeFoamAmount, 0.0, 1.0) * objectFoamEnabled;
   float foamMask = clamp(max(max(wakeFoamMask, visualWakeFoamMask), waveFoamMask), 0.0, 1.0);
   float foamPattern = foamTexture(foamCoord + time * 0.015, info.ba * waterTextureEnabled + vec2(heightSlope + oceanSlope));
-  float textureMask = mix(1.0, mix(0.58, 1.0, foamPattern), foamMottleEnabled);
-  float foam = clamp(pow(foamMask, 1.28) * textureMask * 1.28, 0.0, 1.0);
+  float foamCells = fbm(stableWaterPoint * 46.0 + vec2(time * 0.09, -time * 0.04));
+  float foamHoles = smoothstep(0.18, 0.66, foamCells);
+  float textureMask = mix(1.0, mix(0.44, 1.0, foamPattern * foamHoles), foamMottleEnabled);
+  float foam = clamp(pow(foamMask, 1.18) * textureMask * 1.42, 0.0, 1.0);
 
   vec3 normal = normalize(oceanNormal(stableWaterPoint) + vec3(info.b, 0.0, info.a) * wakeTextureStrength * 1.4);
+  normal = normalize(normal + capillaryNormal(stableWaterPoint, foamMask + abs(wakeHeight) * 6.0, oceanSlope + heightSlope));
   if (visualWakeFoamMask > 0.001) {
     vec2 visualRoughness = vec2(
       noise(stableWaterPoint * 115.0 + vec2(time * 0.8, -time * 0.35)) - 0.5,
       noise(stableWaterPoint * 138.0 + vec2(-time * 0.42, time * 0.7)) - 0.5
-    ) * visualWakeFoamMask * 0.36;
+    ) * visualWakeFoamMask * 0.48;
     normal = normalize(normal + vec3(visualRoughness.x, 0.0, visualRoughness.y));
   }
   float waterMottle = 1.0;
   if (waterMottleEnabled > 0.001) {
     float waterPattern = foamTexture(coord + vec2(time * 0.006, -time * 0.004), info.ba + vec2(oceanSlope, heightSlope));
     float waterFinePattern = noise(coord * 140.0 + vec2(-time * 0.018, time * 0.012));
-    vec2 mottleNormal = vec2(waterPattern - 0.5, waterFinePattern - 0.5) * 0.11;
+    vec2 mottleNormal = vec2(waterPattern - 0.5, waterFinePattern - 0.5) * 0.14;
     normal = normalize(normal + vec3(mottleNormal.x, 0.0, mottleNormal.y));
-    waterMottle = mix(0.88, 1.08, waterPattern);
+    waterMottle = mix(0.84, 1.10, waterPattern);
   }
   float waterImageScale = waterTextureFrequency;
   vec2 waterImageCoord = waveLockedTextureCoord(waterImageScale, info.ba, oceanSlope + heightSlope);
   waterImageCoord += info.ba * 0.14 * waterTextureEnabled;
   waterImageCoord += vec2(heightSlope + oceanSlope, oceanSlope - heightSlope) * 0.18;
   vec3 waterImageColor = texture2D(waterImageTexture, waterImageCoord).rgb;
-  vec3 waterTextureColor = mix(vec3(0.02, 0.22, 0.34), waterImageColor * vec3(0.7, 1.05, 1.25), 0.75);
+  vec3 waterTextureColor = mix(vec3(0.010, 0.125, 0.205), waterImageColor * vec3(0.56, 0.95, 1.22), 0.72);
   float waterImageBlend = waterImageTextureEnabled * waterTextureOpacity * (1.0 - foam * 0.45);
   vec3 incomingRay = normalize(pos - eye);
+  float viewDepthTint = clamp((pos.y + 1.0) * 0.55, 0.0, 1.0);
 
   if (underwater == 1.) {
     normal = -normal;
@@ -428,11 +467,11 @@ void main() {
     float fresnel = mix(0.5, 1.0, pow(1.0 - dot(normal, -incomingRay), 3.0));
 
     vec3 reflectedColor = getSurfaceRayColor(pos, reflectedRay, underwaterColor);
-    vec3 refractedColor = getSurfaceRayColor(pos, refractedRay, vec3(1.0)) * vec3(0.8, 1.0, 1.1);
+    vec3 refractedColor = getSurfaceRayColor(pos, refractedRay, vec3(1.0)) * vec3(0.72, 0.95, 1.08);
     vec3 finalColor = mix(reflectedColor, refractedColor, (1.0 - fresnel) * length(refractedRay));
     finalColor *= waterMottle;
     finalColor = mix(finalColor, finalColor * waterTextureColor * 2.35, waterImageBlend);
-    finalColor = mix(finalColor, vec3(0.82, 0.92, 0.96), foam * 0.32);
+    finalColor = mix(finalColor, vec3(0.78, 0.91, 0.95), foam * 0.36);
 
     gl_FragColor = vec4(finalColor, waterOpacity);
   } else {
@@ -442,16 +481,20 @@ void main() {
 
     vec3 reflectedColor = getSurfaceRayColor(pos, reflectedRay, abovewaterColor);
     vec3 refractedColor = getSurfaceRayColor(pos, refractedRay, abovewaterColor);
-    vec3 opaqueWaterColor = vec3(0.015, 0.16, 0.28);
-    vec3 visibleWaterColor = mix(refractedColor, opaqueWaterColor, waterOpacity);
+    vec3 shallowWaterColor = vec3(0.035, 0.24, 0.31);
+    vec3 deepWaterColor = vec3(0.004, 0.075, 0.145);
+    vec3 opaqueWaterColor = mix(deepWaterColor, shallowWaterColor, viewDepthTint);
+    vec3 visibleWaterColor = mix(refractedColor * vec3(0.82, 0.96, 1.02), opaqueWaterColor, waterOpacity);
     vec3 finalColor = mix(visibleWaterColor, reflectedColor, fresnel);
     finalColor *= waterMottle;
     finalColor = mix(finalColor, waterTextureColor, waterImageBlend);
-    vec2 reflectionDistortion = normal.xz * 0.045 + info.ba * 0.055 * waterTextureEnabled;
+    vec2 reflectionDistortion = normal.xz * 0.060 + info.ba * 0.070 * waterTextureEnabled;
     vec4 planarReflection = getPlanarReflection(reflectionCoord, reflectionDistortion);
-    float objectReflection = planarReflection.a * fresnel * reflectionStrength * (1.0 - foam * 0.65);
+    float objectReflection = planarReflection.a * fresnel * reflectionStrength * (1.0 - foam * 0.74);
     finalColor = mix(finalColor, planarReflection.rgb, objectReflection);
-    finalColor = mix(finalColor, vec3(0.86, 0.94, 0.96), foam * 0.62);
+    float sparkle = pow(max(0.0, dot(reflect(incomingRay, normal), light)), 280.0) * (1.0 - foam) * reflectionStrength;
+    finalColor += vec3(1.0, 0.92, 0.75) * sparkle * 0.055;
+    finalColor = mix(finalColor, vec3(0.82, 0.93, 0.96), foam * 0.72);
 
     gl_FragColor = vec4(finalColor, waterOpacity);
   }

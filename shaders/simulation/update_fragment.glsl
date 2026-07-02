@@ -15,7 +15,7 @@ uniform vec4 waterHullMaskSizes[8];
 uniform sampler2D objectPressureTexture;
 varying vec2 coord;
 
-const float MAX_WAKE_VELOCITY = 0.085;
+const float MAX_WAKE_VELOCITY = 0.105;
 
 float isWaterBounce(vec2 point) {
   float blocked = 0.0;
@@ -88,15 +88,22 @@ void main() {
   /* calculate average neighbor height */
   vec2 dx = vec2(delta.x, 0.0);
   vec2 dy = vec2(0.0, delta.y);
-  float average = (
+  float axialAverage = (
     sampleHeight(coord - dx, info.r) +
     sampleHeight(coord - dy, info.r) +
     sampleHeight(coord + dx, info.r) +
     sampleHeight(coord + dy, info.r)
   ) * 0.25;
+  float diagonalAverage = (
+    sampleHeight(coord - dx - dy, info.r) +
+    sampleHeight(coord - dx + dy, info.r) +
+    sampleHeight(coord + dx - dy, info.r) +
+    sampleHeight(coord + dx + dy, info.r)
+  ) * 0.25;
+  float average = mix(axialAverage, diagonalAverage, 0.28);
 
   /* change the velocity to move toward the average */
-  info.g += clamp((average - info.r) * 2.0, -MAX_WAKE_VELOCITY, MAX_WAKE_VELOCITY);
+  info.g += clamp((average - info.r) * 2.15, -MAX_WAKE_VELOCITY, MAX_WAKE_VELOCITY);
 
   /* attenuate the velocity a little so waves do not last forever */
   info.g *= rippleDistance;
@@ -112,10 +119,13 @@ void main() {
     float turbulence = objectPressure.b;
     float correction = clamp(targetHeight - info.r, -maxWakeHeight, maxWakeHeight);
 
-    info.g += correction * objectPressure.a * 0.38;
-    info.g += impulse * objectPressure.a * 1.04;
-    info.r += correction * objectPressure.a * 0.065;
-    info.g *= mix(1.0, 0.952, clamp(turbulence * objectPressure.a, 0.0, 1.0));
+    float coverage = smoothstep(0.0, 0.62, objectPressure.a);
+    float aeration = clamp(turbulence * coverage, 0.0, 1.0);
+
+    info.g += correction * coverage * 0.46;
+    info.g += impulse * coverage * 1.18;
+    info.r += correction * coverage * 0.082;
+    info.g *= mix(1.0, 0.942, aeration);
     info.g = clamp(info.g, -MAX_WAKE_VELOCITY, MAX_WAKE_VELOCITY);
   }
 
