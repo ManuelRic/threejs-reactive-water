@@ -229,6 +229,10 @@ body {
   grid-template-columns: repeat(auto-fit, minmax(7.5rem, 1fr));
 }
 
+.button-row-three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .button-row .button {
   border-radius: 6px;
   font-weight: 650;
@@ -248,9 +252,81 @@ body {
   color: #274a54;
 }
 
+.select-control {
+  align-items: center;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) minmax(9rem, 1.25fr);
+}
+
+.select-control label {
+  color: #25464f;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.select-control select {
+  background: #f0f6f7;
+  border: 1px solid rgba(45, 103, 119, 0.16);
+  border-radius: 6px;
+  color: #173841;
+  font: inherit;
+  font-size: 0.8rem;
+  min-height: 2rem;
+  padding: 0 8px;
+  width: 100%;
+}
+
+.color-control {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}
+
+.color-control label {
+  color: #25464f;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.color-control input[type='color'] {
+  background: #f0f6f7;
+  border: 1px solid rgba(45, 103, 119, 0.16);
+  border-radius: 6px;
+  cursor: pointer;
+  height: 2rem;
+  padding: 3px;
+  width: 3.4rem;
+}
+
+.diagnostics-grid {
+  background: #f0f6f7;
+  border: 1px solid rgba(45, 103, 119, 0.11);
+  border-radius: 6px;
+  display: grid;
+  font-size: 0.74rem;
+  gap: 5px 12px;
+  grid-template-columns: minmax(5rem, 0.7fr) minmax(0, 1.3fr);
+  padding: 9px 10px;
+}
+
+.diagnostics-grid span {
+  color: #56727b;
+  font-weight: 650;
+}
+
+.diagnostics-grid output {
+  color: #173841;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
 .button-row .button:focus-visible,
 .range-control input[type='range']:focus-visible,
 .value-input:focus-visible,
+.select-control select:focus-visible,
+.color-control input[type='color']:focus-visible,
 .controls-toggle:focus-visible,
 .controls-close:focus-visible {
   outline: 2px solid #1f8ea5;

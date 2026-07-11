@@ -6,6 +6,9 @@ uniform vec2 delta;
 uniform float rippleDistance;
 uniform float wakeHeightRecovery;
 uniform float maxWakeHeight;
+uniform float timeStep;
+uniform float wavePropagationSpeed;
+uniform float viscosity;
 uniform vec2 waterSize;
 uniform float waterBounceCount;
 uniform vec4 waterBounceRects[16];
@@ -79,6 +82,7 @@ float sampleHeight(vec2 point, float fallbackHeight) {
 void main() {
   /* get vertex info */
   vec4 info = texture2D(texture, coord);
+  float stepScale = clamp(timeStep * 60.0, 0.0, 2.0);
 
   if (isWaterBounce(coord) > 0.5) {
     gl_FragColor = vec4(0.0);
@@ -103,14 +107,18 @@ void main() {
   float average = mix(axialAverage, diagonalAverage, 0.28);
 
   /* change the velocity to move toward the average */
-  info.g += clamp((average - info.r) * 2.15, -MAX_WAKE_VELOCITY, MAX_WAKE_VELOCITY);
+  info.g += clamp(
+    (average - info.r) * 2.15 * wavePropagationSpeed * stepScale,
+    -MAX_WAKE_VELOCITY,
+    MAX_WAKE_VELOCITY
+  );
 
   /* attenuate the velocity a little so waves do not last forever */
-  info.g *= rippleDistance;
+  info.g *= pow(rippleDistance, stepScale) * exp(-viscosity * timeStep);
 
   /* move the vertex along the velocity */
   info.g = clamp(info.g, -MAX_WAKE_VELOCITY, MAX_WAKE_VELOCITY);
-  info.r += info.g;
+  info.r += info.g * stepScale;
 
   vec4 objectPressure = texture2D(objectPressureTexture, coord);
   if (objectPressure.a > 0.000001) {
@@ -122,14 +130,14 @@ void main() {
     float coverage = smoothstep(0.0, 0.62, objectPressure.a);
     float aeration = clamp(turbulence * coverage, 0.0, 1.0);
 
-    info.g += correction * coverage * 0.46;
-    info.g += impulse * coverage * 1.18;
-    info.r += correction * coverage * 0.082;
-    info.g *= mix(1.0, 0.942, aeration);
+    info.g += correction * coverage * 0.46 * stepScale;
+    info.g += impulse * coverage * 1.18 * stepScale;
+    info.r += correction * coverage * 0.082 * stepScale;
+    info.g *= pow(mix(1.0, 0.942, aeration), stepScale);
     info.g = clamp(info.g, -MAX_WAKE_VELOCITY, MAX_WAKE_VELOCITY);
   }
 
-  info.r *= wakeHeightRecovery;
+  info.r *= pow(wakeHeightRecovery, stepScale);
   info.r = clamp(info.r, -maxWakeHeight, maxWakeHeight);
   info.g = clamp(info.g, -MAX_WAKE_VELOCITY, MAX_WAKE_VELOCITY);
 

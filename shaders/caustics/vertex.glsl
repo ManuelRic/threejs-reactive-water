@@ -11,6 +11,9 @@ uniform float oceanWaveStrength;
 uniform float oceanWaveFrequency;
 uniform float oceanWaveSpeed;
 uniform float oceanWaveSharpness;
+uniform vec2 oceanWindDirection;
+uniform float oceanWindSpeed;
+uniform float oceanChoppiness;
 uniform float fftWavesEnabled;
 uniform float waveCausticsEnabled;
 uniform float waterBounceCount;
@@ -26,6 +29,18 @@ struct OceanWave {
   float steepness;
 };
 
+float oceanWindEnergy() {
+  return clamp(oceanWindSpeed / 9.0, 0.35, 1.85);
+}
+
+vec2 orientToWind(vec2 direction) {
+  vec2 wind = normalize(oceanWindDirection);
+  return normalize(vec2(
+    direction.x * wind.x - direction.y * wind.y,
+    direction.x * wind.y + direction.y * wind.x
+  ));
+}
+
 float stormAmount() {
   return smoothstep(0.08, 0.12, oceanWaveStrength);
 }
@@ -40,7 +55,7 @@ float sharpenCrest(float crest, float storm) {
 }
 
 float gerstnerHeight(vec2 point, OceanWave wave) {
-  vec2 direction = normalize(wave.direction);
+  vec2 direction = orientToWind(wave.direction);
   float phase = dot(point, direction) * wave.frequency * oceanWaveFrequency + time * wave.speed * oceanWaveSpeed;
   float crest = sin(phase);
 
@@ -56,11 +71,11 @@ float gerstnerOceanHeight(vec2 point) {
   height += gerstnerHeight(point, OceanWave(vec2(0.2, 1.0), 17.0, 2.65, 0.08, 0.22));
   height += gerstnerHeight(point, OceanWave(vec2(-1.0, 0.15), 24.0, 3.4, 0.045, 0.18));
 
-  return height * oceanWaveStrength;
+  return height * oceanWaveStrength * oceanWindEnergy();
 }
 
 float spectralWaveHeight(vec2 point, vec2 direction, float frequency, float speed, float amplitude, float phase) {
-  vec2 waveDirection = normalize(direction);
+  vec2 waveDirection = orientToWind(direction);
   float angle = dot(point, waveDirection) * frequency * oceanWaveFrequency + time * speed * oceanWaveSpeed + phase;
 
   return sin(angle) * amplitude;
@@ -86,7 +101,7 @@ float spectralOceanHeight(vec2 point) {
   height += spectralWaveHeight(point, vec2(0.86, 0.50), 48.00, 5.10, 0.009, 2.45);
   height += spectralWaveHeight(point, vec2(-0.98, 0.18), 56.00, 5.75, 0.007, 4.85);
 
-  return height * oceanWaveStrength;
+  return height * oceanWaveStrength * oceanWindEnergy();
 }
 
 float oceanHeight(vec2 point) {

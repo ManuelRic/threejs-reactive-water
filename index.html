@@ -3,6 +3,7 @@
   <head>
     <title>ThreeJS Water</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="icon" href="data:,">
 
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bulma@0.8.0/css/bulma.min.css">
     <link rel="stylesheet" href="styles.css">
@@ -33,6 +34,35 @@
           <button id="controls-close" class="controls-close" type="button" aria-label="Close controls">&times;</button>
         </div>
 
+        <div class="control-group">
+          <div class="control-group-header">
+            <h2>Quality and diagnostics</h2>
+          </div>
+          <div class="button-row button-row-three">
+            <button id="quality-low" class="button is-small is-light" type="button">Low</button>
+            <button id="quality-medium" class="button is-small is-light" type="button">Medium</button>
+            <button id="quality-ultra" class="button is-small is-info" type="button">Ultra</button>
+          </div>
+          <div class="select-control">
+            <label for="debug-view">Field view</label>
+            <select id="debug-view">
+              <option value="off">Rendered ocean</option>
+              <option value="height">Wake height</option>
+              <option value="velocity">Vertical velocity</option>
+              <option value="foam">Foam and aeration</option>
+              <option value="flow">Foam flow</option>
+              <option value="source">Hull source impulses</option>
+            </select>
+          </div>
+          <div class="diagnostics-grid" aria-live="polite">
+            <span>FPS</span><output id="diagnostic-fps">--</output>
+            <span>CPU</span><output id="diagnostic-cpu">-- ms</output>
+            <span>GPU</span><output id="diagnostic-gpu">-- ms</output>
+            <span>Simulation</span><output id="diagnostic-simulation">--</output>
+            <span>Renderer</span><output id="diagnostic-renderer">--</output>
+          </div>
+        </div>
+
         <div class="control-group control-group-objects">
           <div class="control-group-header">
             <h2>Scene objects</h2>
@@ -50,14 +80,21 @@
             <h2>Ship motion</h2>
           </div>
           <div class="button-row">
+            <button id="ship-mode-straight" class="button is-small is-light" type="button">Straight</button>
             <button id="ship-mode-random" class="button is-small is-info" type="button">Random</button>
             <button id="ship-mode-circle" class="button is-small is-light" type="button">Circle</button>
+            <button id="ship-mode-s-turn" class="button is-small is-light" type="button">S-turn</button>
+            <button id="ship-mode-geometry" class="button is-small is-light" type="button">Geometry</button>
             <button id="ship-mode-stopped" class="button is-small is-light" type="button">Stopped</button>
           </div>
           <div class="control-grid">
             <div class="range-control">
               <label for="ship-buoyancy"><span>Ship buoyancy</span><input id="ship-buoyancy-value" class="value-input" type="number" min="0" max="2" step="0.01" value="1.00"></label>
               <input id="ship-buoyancy" class="slider is-fullwidth" type="range" min="0" max="2" step="0.01" value="1">
+            </div>
+            <div class="range-control">
+              <label for="ship-speed"><span>Ship speed (m/s)</span><input id="ship-speed-value" class="value-input" type="number" min="0.03" max="1.5" step="0.01" value="0.18"></label>
+              <input id="ship-speed" class="slider is-fullwidth" type="range" min="0.03" max="1.5" step="0.01" value="0.18">
             </div>
           </div>
         </div>
@@ -79,12 +116,12 @@
             <h2>Water motion</h2>
           </div>
           <div class="button-row">
-            <button id="toggle-fft-waves" class="button is-small is-info" type="button">FFT waves</button>
+            <button id="toggle-fft-waves" class="button is-small is-info" type="button">Spectral ocean</button>
           </div>
           <div class="control-grid">
             <div class="range-control">
-              <label for="wave-amplitude"><span>Amplitude</span><input id="wave-amplitude-value" class="value-input" type="number" min="0" max="0.12" step="0.001" value="0.045"></label>
-              <input id="wave-amplitude" class="slider is-fullwidth" type="range" min="0" max="0.12" step="0.001" value="0.045">
+              <label for="wave-amplitude"><span>Amplitude</span><input id="wave-amplitude-value" class="value-input" type="number" min="0" max="0.12" step="0.001" value="0.032"></label>
+              <input id="wave-amplitude" class="slider is-fullwidth" type="range" min="0" max="0.12" step="0.001" value="0.032">
             </div>
             <div class="range-control">
               <label for="wave-frequency"><span>Frequency</span><input id="wave-frequency-value" class="value-input" type="number" min="0.2" max="3" step="0.01" value="1.00"></label>
@@ -95,8 +132,24 @@
               <input id="wave-speed" class="slider is-fullwidth" type="range" min="0" max="3" step="0.01" value="1">
             </div>
             <div class="range-control">
-              <label for="wave-sharpness"><span>Sharpness</span><input id="wave-sharpness-value" class="value-input" type="number" min="0" max="2.5" step="0.01" value="1.18"></label>
-              <input id="wave-sharpness" class="slider is-fullwidth" type="range" min="0" max="2.5" step="0.01" value="1.18">
+              <label for="wave-sharpness"><span>Sharpness</span><input id="wave-sharpness-value" class="value-input" type="number" min="0" max="2.5" step="0.01" value="1.05"></label>
+              <input id="wave-sharpness" class="slider is-fullwidth" type="range" min="0" max="2.5" step="0.01" value="1.05">
+            </div>
+            <div class="range-control">
+              <label for="wind-speed"><span>Wind speed</span><input id="wind-speed-value" class="value-input" type="number" min="0" max="24" step="0.1" value="9.0"></label>
+              <input id="wind-speed" class="slider is-fullwidth" type="range" min="0" max="24" step="0.1" value="9">
+            </div>
+            <div class="range-control">
+              <label for="wind-direction"><span>Wind direction</span><input id="wind-direction-value" class="value-input" type="number" min="0" max="360" step="1" value="28"></label>
+              <input id="wind-direction" class="slider is-fullwidth" type="range" min="0" max="360" step="1" value="28">
+            </div>
+            <div class="range-control">
+              <label for="swell-amplitude"><span>Swell scale</span><input id="swell-amplitude-value" class="value-input" type="number" min="0" max="2" step="0.01" value="1.00"></label>
+              <input id="swell-amplitude" class="slider is-fullwidth" type="range" min="0" max="2" step="0.01" value="1">
+            </div>
+            <div class="range-control">
+              <label for="choppiness"><span>Choppiness</span><input id="choppiness-value" class="value-input" type="number" min="0" max="2.5" step="0.01" value="1.18"></label>
+              <input id="choppiness" class="slider is-fullwidth" type="range" min="0" max="2.5" step="0.01" value="1.18">
             </div>
           </div>
         </div>
@@ -145,6 +198,14 @@
               <label for="ripple-length"><span>Ripple length</span><input id="ripple-length-value" class="value-input" type="number" min="0.75" max="0.999" step="0.001" value="0.948"></label>
               <input id="ripple-length" class="slider is-fullwidth" type="range" min="0.75" max="0.999" step="0.001" value="0.948">
             </div>
+            <div class="range-control">
+              <label for="near-wake-length"><span>Near wake length</span><input id="near-wake-length-value" class="value-input" type="number" min="0.3" max="4" step="0.05" value="0.90"></label>
+              <input id="near-wake-length" class="slider is-fullwidth" type="range" min="0.3" max="4" step="0.05" value="0.9">
+            </div>
+            <div class="range-control">
+              <label for="far-wake-lifetime"><span>Far wake lifetime</span><input id="far-wake-lifetime-value" class="value-input" type="number" min="1" max="30" step="0.5" value="8.0"></label>
+              <input id="far-wake-lifetime" class="slider is-fullwidth" type="range" min="1" max="30" step="0.5" value="8">
+            </div>
           </div>
           <div class="button-row">
             <button id="toggle-object-foam" class="button is-small is-info" type="button">Object foam</button>
@@ -156,24 +217,97 @@
 
         <div class="control-group">
           <div class="control-group-header">
-            <h2>Render</h2>
+            <h2>Dynamic solver</h2>
+          </div>
+          <div class="select-control">
+            <label for="fixed-step">Fixed update</label>
+            <select id="fixed-step">
+              <option value="30">30 Hz</option>
+              <option value="60" selected>60 Hz</option>
+              <option value="120">120 Hz</option>
+            </select>
+          </div>
+          <div class="select-control">
+            <label for="render-rate">Render cap</label>
+            <select id="render-rate">
+              <option value="0" selected>Display refresh</option>
+              <option value="30">30 FPS</option>
+              <option value="60">60 FPS</option>
+              <option value="120">120 FPS</option>
+            </select>
           </div>
           <div class="control-grid">
             <div class="range-control">
-              <label for="reflection-strength"><span>Reflection</span><input id="reflection-strength-value" class="value-input" type="number" min="0" max="5" step="0.01" value="1.55"></label>
-              <input id="reflection-strength" class="slider is-fullwidth" type="range" min="0" max="5" step="0.01" value="1.55">
+              <label for="propagation-speed"><span>Propagation</span><input id="propagation-speed-value" class="value-input" type="number" min="0.2" max="2" step="0.01" value="1.00"></label>
+              <input id="propagation-speed" class="slider is-fullwidth" type="range" min="0.2" max="2" step="0.01" value="1">
             </div>
             <div class="range-control">
-              <label for="water-opacity"><span>Water opacity</span><input id="water-opacity-value" class="value-input" type="number" min="0.05" max="1" step="0.01" value="0.48"></label>
-              <input id="water-opacity" class="slider is-fullwidth" type="range" min="0.05" max="1" step="0.01" value="0.48">
+              <label for="viscosity"><span>Viscosity</span><input id="viscosity-value" class="value-input" type="number" min="0" max="0.5" step="0.01" value="0.08"></label>
+              <input id="viscosity" class="slider is-fullwidth" type="range" min="0" max="0.5" step="0.01" value="0.08">
+            </div>
+            <div class="range-control">
+              <label for="foam-threshold"><span>Foam threshold</span><input id="foam-threshold-value" class="value-input" type="number" min="0.001" max="0.04" step="0.001" value="0.009"></label>
+              <input id="foam-threshold" class="slider is-fullwidth" type="range" min="0.001" max="0.04" step="0.001" value="0.009">
+            </div>
+            <div class="range-control">
+              <label for="foam-decay"><span>Foam decay</span><input id="foam-decay-value" class="value-input" type="number" min="0.05" max="1.5" step="0.01" value="0.34"></label>
+              <input id="foam-decay" class="slider is-fullwidth" type="range" min="0.05" max="1.5" step="0.01" value="0.34">
+            </div>
+            <div class="range-control">
+              <label for="foam-advection"><span>Foam advection</span><input id="foam-advection-value" class="value-input" type="number" min="0" max="2" step="0.01" value="0.72"></label>
+              <input id="foam-advection" class="slider is-fullwidth" type="range" min="0" max="2" step="0.01" value="0.72">
+            </div>
+            <div class="range-control">
+              <label for="turbulence"><span>Turbulence</span><input id="turbulence-value" class="value-input" type="number" min="0" max="2.5" step="0.01" value="1.00"></label>
+              <input id="turbulence" class="slider is-fullwidth" type="range" min="0" max="2.5" step="0.01" value="1">
+            </div>
+            <div class="range-control">
+              <label for="hull-impulse"><span>Hull impulse</span><input id="hull-impulse-value" class="value-input" type="number" min="0" max="3" step="0.01" value="1.00"></label>
+              <input id="hull-impulse" class="slider is-fullwidth" type="range" min="0" max="3" step="0.01" value="1">
+            </div>
+            <div class="range-control">
+              <label for="bow-strength"><span>Bow wave</span><input id="bow-strength-value" class="value-input" type="number" min="0" max="3" step="0.01" value="1.00"></label>
+              <input id="bow-strength" class="slider is-fullwidth" type="range" min="0" max="3" step="0.01" value="1">
+            </div>
+            <div class="range-control">
+              <label for="stern-turbulence"><span>Stern turbulence</span><input id="stern-turbulence-value" class="value-input" type="number" min="0" max="3" step="0.01" value="1.00"></label>
+              <input id="stern-turbulence" class="slider is-fullwidth" type="range" min="0" max="3" step="0.01" value="1">
+            </div>
+            <div class="range-control">
+              <label for="propeller-wash"><span>Propeller wash</span><input id="propeller-wash-value" class="value-input" type="number" min="0" max="3" step="0.01" value="1.00"></label>
+              <input id="propeller-wash" class="slider is-fullwidth" type="range" min="0" max="3" step="0.01" value="1">
+            </div>
+          </div>
+        </div>
+
+        <div class="control-group">
+          <div class="control-group-header">
+            <h2>Render</h2>
+          </div>
+          <div class="control-grid">
+            <div class="color-control">
+              <label for="water-color">Water body</label>
+              <input id="water-color" type="color" value="#06364c">
+            </div>
+            <div class="color-control">
+              <label for="absorption-color">Absorption</label>
+              <input id="absorption-color" type="color" value="#571c0e">
+            </div>
+            <div class="range-control">
+              <label for="reflection-strength"><span>Reflection</span><input id="reflection-strength-value" class="value-input" type="number" min="0" max="5" step="0.01" value="1.25"></label>
+              <input id="reflection-strength" class="slider is-fullwidth" type="range" min="0" max="5" step="0.01" value="1.25">
+            </div>
+            <div class="range-control">
+              <label for="water-opacity"><span>Water opacity</span><input id="water-opacity-value" class="value-input" type="number" min="0.05" max="1" step="0.01" value="0.92"></label>
+              <input id="water-opacity" class="slider is-fullwidth" type="range" min="0.05" max="1" step="0.01" value="0.92">
             </div>
             <div class="range-control">
               <label for="shadow-strength"><span>Shadow strength</span><input id="shadow-strength-value" class="value-input" type="number" min="0" max="0.8" step="0.01" value="0.24"></label>
               <input id="shadow-strength" class="slider is-fullwidth" type="range" min="0" max="0.8" step="0.01" value="0.24">
             </div>
             <div class="range-control">
-              <label for="water-texture-opacity"><span>Texture opacity</span><input id="water-texture-opacity-value" class="value-input" type="number" min="0" max="1" step="0.01" value="0.42"></label>
-              <input id="water-texture-opacity" class="slider is-fullwidth" type="range" min="0" max="1" step="0.01" value="0.42">
+              <label for="water-texture-opacity"><span>Texture opacity</span><input id="water-texture-opacity-value" class="value-input" type="number" min="0" max="1" step="0.01" value="0.16"></label>
+              <input id="water-texture-opacity" class="slider is-fullwidth" type="range" min="0" max="1" step="0.01" value="0.16">
             </div>
             <div class="range-control">
               <label for="water-texture-frequency"><span>Texture frequency</span><input id="water-texture-frequency-value" class="value-input" type="number" min="0.2" max="8" step="0.01" value="2.70"></label>
@@ -181,7 +315,7 @@
             </div>
           </div>
           <div class="button-row">
-            <button id="toggle-wave-caustics" class="button is-small is-info" type="button">Wave caustics</button>
+            <button id="toggle-wave-caustics" class="button is-small is-light" type="button">Wave caustics</button>
             <button id="toggle-water-texture" class="button is-small is-info" type="button">Water texture</button>
             <button id="toggle-wireframe" class="button is-small is-light" type="button">Wireframe</button>
           </div>
