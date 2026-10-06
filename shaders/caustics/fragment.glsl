@@ -1,8 +1,6 @@
 precision highp float;
 precision highp int;
 
-#extension GL_OES_standard_derivatives : enable
-
 #include <utils>
 
 varying vec3 oldPos;

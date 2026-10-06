@@ -4,7 +4,6 @@ precision highp int;
 varying vec3 oldPos;
 varying vec3 newPos;
 varying vec3 ray;
-attribute vec3 position;
 uniform vec2 waterSize;
 uniform float time;
 uniform float oceanWaveStrength;

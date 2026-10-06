@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html>
   <head>
+    <meta charset="utf-8">
     <title>ThreeJS Water</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <link rel="icon" href="data:,">
@@ -8,11 +9,15 @@
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bulma@0.8.0/css/bulma.min.css">
     <link rel="stylesheet" href="styles.css">
 
-    <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/three@v0.113.0"></script>
-    <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/three@0.113.0/examples/js/loaders/GLTFLoader.js"></script>
+    <script src="node_modules/three/build/three.min.js"></script>
+    <script src="node_modules/three/examples/js/loaders/GLTFLoader.js"></script>
+    <script src="water-interaction.js"></script>
+    <script src="kelvin-wake.js"></script>
+    <script src="kelvin-renderer.js"></script>
+    <script src="ocean-grid.js"></script>
   </head>
 
-  <body class="controls-open">
+  <body>
     <main class="app-shell">
       <section class="viewport">
         <canvas id="canvas" height="600" width="800"></canvas>
@@ -41,12 +46,14 @@
           <div class="button-row button-row-three">
             <button id="quality-low" class="button is-small is-light" type="button">Low</button>
             <button id="quality-medium" class="button is-small is-light" type="button">Medium</button>
-            <button id="quality-ultra" class="button is-small is-info" type="button">Ultra</button>
+            <button id="quality-ultra" class="button is-small is-light" type="button">Ultra</button>
+            <button id="adaptive-resolution" class="button is-small is-info" type="button" aria-pressed="true">Adaptive resolution</button>
           </div>
           <div class="select-control">
             <label for="debug-view">Field view</label>
             <select id="debug-view">
               <option value="off">Rendered ocean</option>
+              <option value="kelvin">Directional ship waves</option>
               <option value="height">Wake height</option>
               <option value="velocity">Vertical velocity</option>
               <option value="foam">Foam and aeration</option>
@@ -56,10 +63,13 @@
           </div>
           <div class="diagnostics-grid" aria-live="polite">
             <span>FPS</span><output id="diagnostic-fps">--</output>
+            <span>Frame pacing</span><output id="diagnostic-pacing">--</output>
             <span>CPU</span><output id="diagnostic-cpu">-- ms</output>
+            <span>CPU split</span><output id="diagnostic-stages">--</output>
             <span>GPU</span><output id="diagnostic-gpu">-- ms</output>
             <span>Simulation</span><output id="diagnostic-simulation">--</output>
             <span>Renderer</span><output id="diagnostic-renderer">--</output>
+            <span>Interaction</span><output id="diagnostic-interaction">--</output>
           </div>
         </div>
 
@@ -68,6 +78,7 @@
             <h2>Scene objects</h2>
           </div>
           <div class="button-row">
+            <button id="camera-follow" class="button is-small is-info" type="button" aria-pressed="true">Follow vessel</button>
             <button id="toggle-sphere" class="button is-small is-info" type="button">Sphere</button>
             <button id="toggle-ship" class="button is-small is-info" type="button">Ship</button>
             <button id="toggle-square" class="button is-small is-info" type="button">Square</button>
@@ -93,8 +104,8 @@
               <input id="ship-buoyancy" class="slider is-fullwidth" type="range" min="0" max="2" step="0.01" value="1">
             </div>
             <div class="range-control">
-              <label for="ship-speed"><span>Ship speed (m/s)</span><input id="ship-speed-value" class="value-input" type="number" min="0.03" max="1.5" step="0.01" value="0.18"></label>
-              <input id="ship-speed" class="slider is-fullwidth" type="range" min="0.03" max="1.5" step="0.01" value="0.18">
+              <label for="ship-speed"><span>Ship speed (scene units/s; 1 unit = 40 m)</span><input id="ship-speed-value" class="value-input" type="number" min="0" max="1.5" step="0.01" value="0.18"></label>
+              <input id="ship-speed" class="slider is-fullwidth" type="range" min="0" max="1.5" step="0.01" value="0.18">
             </div>
           </div>
         </div>
@@ -115,6 +126,14 @@
           <div class="control-group-header">
             <h2>Water motion</h2>
           </div>
+          <div class="select-control">
+            <label for="sea-state">Sea state</label>
+            <select id="sea-state">
+              <option value="harbor">Sheltered harbor</option>
+              <option value="ocean" selected>Open ocean</option>
+              <option value="rough">Rough sea</option>
+            </select>
+          </div>
           <div class="button-row">
             <button id="toggle-fft-waves" class="button is-small is-info" type="button">Spectral ocean</button>
           </div>
@@ -125,7 +144,7 @@
             </div>
             <div class="range-control">
               <label for="wave-frequency"><span>Frequency</span><input id="wave-frequency-value" class="value-input" type="number" min="0.2" max="3" step="0.01" value="1.00"></label>
-              <input id="wave-frequency" class="slider is-fullwidth" type="range" min="0.2" max="100" step="0.01" value="1">
+              <input id="wave-frequency" class="slider is-fullwidth" type="range" min="0.2" max="3" step="0.01" value="1">
             </div>
             <div class="range-control">
               <label for="wave-speed"><span>Speed</span><input id="wave-speed-value" class="value-input" type="number" min="0" max="3" step="0.01" value="1.00"></label>
@@ -316,6 +335,7 @@
           </div>
           <div class="button-row">
             <button id="toggle-wave-caustics" class="button is-small is-light" type="button">Wave caustics</button>
+            <button id="toggle-deep-water" class="button is-small is-info" type="button">Deep water</button>
             <button id="toggle-water-texture" class="button is-small is-info" type="button">Water texture</button>
             <button id="toggle-wireframe" class="button is-small is-light" type="button">Wireframe</button>
           </div>

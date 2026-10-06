@@ -71,6 +71,7 @@ float isWaterBounce(vec2 point) {
 }
 
 float sampleHeight(vec2 point, float fallbackHeight) {
+  if (point.x < 0.0 || point.y < 0.0 || point.x > 1.0 || point.y > 1.0) return 0.0;
   if (isWaterBounce(point) > 0.5) {
     return fallbackHeight;
   }
@@ -108,7 +109,8 @@ void main() {
 
   /* change the velocity to move toward the average */
   info.g += clamp(
-    (average - info.r) * 2.15 * wavePropagationSpeed * stepScale,
+    (average - info.r) * 2.15 * wavePropagationSpeed * stepScale *
+      pow(1.0 / (delta.x * 384.0), 2.0),
     -MAX_WAKE_VELOCITY,
     MAX_WAKE_VELOCITY
   );
@@ -140,6 +142,14 @@ void main() {
   info.r *= pow(wakeHeightRecovery, stepScale);
   info.r = clamp(info.r, -maxWakeHeight, maxWakeHeight);
   info.g = clamp(info.g, -MAX_WAKE_VELOCITY, MAX_WAKE_VELOCITY);
+
+  // Open-water sponge absorbs disturbances instead of reflecting them at the
+  // test-domain edge. Explicit dock/wall masks retain their reflecting boundary.
+  float edgeDistance = min(min(coord.x, 1.0 - coord.x) * waterSize.x,
+    min(coord.y, 1.0 - coord.y) * waterSize.y);
+  float sponge = 1.0 - smoothstep(0.0, 0.35, edgeDistance);
+  float absorption = exp(-sponge * sponge * timeStep * 18.0);
+  info.rg *= absorption;
 
   gl_FragColor = info;
 }

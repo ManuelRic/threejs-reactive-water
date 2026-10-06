@@ -8,9 +8,10 @@ varying vec2 coord;
 void main() {
   vec4 color = texture2D(texture, coord);
 
-  if (mode == 1) {
-    float positive = smoothstep(0.0, 0.10, color.r);
-    float negative = smoothstep(0.0, 0.10, -color.r);
+  if (mode == 1 || mode == 6) {
+    float scale = mode == 6 ? 0.006 : 0.10;
+    float positive = smoothstep(0.0, scale, color.r);
+    float negative = smoothstep(0.0, scale, -color.r);
     gl_FragColor = vec4(vec3(0.035) + vec3(0.95, 0.22, 0.08) * positive + vec3(0.04, 0.42, 1.0) * negative, 1.0);
     return;
   }

@@ -1,7 +1,5 @@
-uniform mat4 projectionMatrix;
-uniform mat4 viewMatrix;
-uniform mat4 modelMatrix;
 uniform sampler2D water;
+uniform sampler2D kelvinTexture;
 uniform mat4 reflectionTextureMatrix;
 uniform vec3 worldCameraPosition;
 uniform float time;
@@ -17,13 +15,30 @@ uniform float wakeWaveStrength;
 uniform float waterTextureEnabled;
 uniform vec2 waterSize;
 
-attribute vec3 position;
+attribute float oceanSpacing;
 
 varying vec3 eye;
 varying vec3 pos;
 varying vec4 reflectionCoord;
 varying vec2 waterUv;
 varying vec2 waterWaveUv;
+varying vec3 oceanSurfaceNormal;
+varying float oceanElevation;
+vec3 tangentX;
+vec3 tangentZ;
+
+// Analytic derivatives of the same displacement used for geometry, including
+// the horizontal Gerstner compression. No finite-difference field pass.
+void waveDerivatives(vec2 direction, float k, float heightSlope, float horizontalSlope) {
+  tangentX += vec3(direction.x * direction.x * horizontalSlope,
+    direction.x * heightSlope, direction.x * direction.y * horizontalSlope) * k;
+  tangentZ += vec3(direction.x * direction.y * horizontalSlope,
+    direction.y * heightSlope, direction.y * direction.y * horizontalSlope) * k;
+}
+
+float waveLod(float k) {
+  return 1.0 - smoothstep(1.5, 3.0, k * oceanSpacing);
+}
 
 struct OceanWave {
   vec2 direction;
@@ -65,12 +80,18 @@ vec3 gerstnerWave(vec2 point, OceanWave wave) {
   float storm = stormAmount();
   float shapedCrest = sharpenCrest(crest, storm);
   float horizontal = cos(phase) * wave.steepness * wave.amplitude * oceanWaveSharpness * oceanChoppiness * (1.0 + storm * 0.55);
+  float k = wave.frequency * oceanWaveFrequency;
+  float lod = waveLod(k);
+  float crestDerivative = 1.0 + storm * oceanWaveSharpness *
+    (2.55 * pow(max(crest, 0.0), 2.0) + 0.32 * max(-crest, 0.0));
+  waveDerivatives(direction, k, cos(phase) * wave.amplitude * crestDerivative * lod,
+    -sin(phase) * wave.steepness * wave.amplitude * oceanWaveSharpness * oceanChoppiness * (1.0 + storm * 0.55) * lod);
 
   return vec3(
     direction.x * horizontal,
     shapedCrest * wave.amplitude,
     direction.y * horizontal
-  );
+  ) * lod;
 }
 
 vec3 gerstnerOceanDisplacement(vec2 point) {
@@ -91,12 +112,15 @@ vec3 spectralWave(vec2 point, vec2 direction, float frequency, float speed, floa
   float crest = sin(angle);
   float slope = cos(angle);
   float chop = amplitude * oceanWaveSharpness * oceanChoppiness * 0.18;
+  float k = frequency * oceanWaveFrequency;
+  float lod = waveLod(k);
+  waveDerivatives(waveDirection, k, slope * amplitude * lod, -crest * chop * lod);
 
   return vec3(
     waveDirection.x * slope * chop,
     crest * amplitude,
     waveDirection.y * slope * chop
-  );
+  ) * lod;
 }
 
 vec3 spectralOceanDisplacement(vec2 point) {
@@ -135,11 +159,20 @@ void main() {
   vec2 worldPoint = worldPosition.xz;
 
   waterUv = worldPoint / waterSize + 0.5;
-  vec4 info = texture2D(water, waterUv);
+  float localMask = step(0.0, waterUv.x) * step(waterUv.x, 1.0) * step(0.0, waterUv.y) * step(waterUv.y, 1.0);
+  vec4 info = texture2D(water, waterUv) * localMask;
   pos = worldPosition.xyz;
+  tangentX = vec3(0.0);
+  tangentZ = vec3(0.0);
   vec3 ocean = oceanDisplacement(worldPoint);
+  float scale = oceanWaveStrength * oceanWindEnergy();
+  tangentX = vec3(1.0, 0.0, 0.0) + tangentX * scale;
+  tangentZ = vec3(0.0, 0.0, 1.0) + tangentZ * scale;
+  oceanSurfaceNormal = normalize(cross(tangentZ, tangentX));
+  oceanElevation = ocean.y;
   pos.xz += ocean.xz;
   pos.y += ocean.y + info.r * wakeWaveStrength * waterTextureEnabled;
+  pos.y += texture2D(kelvinTexture, waterUv).r * waterTextureEnabled * localMask;
   waterWaveUv = pos.xz / waterSize + 0.5;
   reflectionCoord = reflectionTextureMatrix * vec4(pos, 1.0);
   eye = worldCameraPosition;

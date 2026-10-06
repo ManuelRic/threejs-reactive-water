@@ -1,5 +1,11 @@
 # Water And Wake System Audit
 
+> Update: the local geometry/contact implementation, new deep-water mode and
+> current defaults are documented in `water-interaction-guide.md`. The audit below
+> describes the previous implementation; in particular, mesh samples now come
+> from triangle interiors, Medium is the default, and navigation wakes require
+> measured horizontal translation independently of contact/heave/rotation.
+
 ## Scope
 
 This project remains a directly loaded Three.js r113 application. The implementation

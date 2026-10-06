@@ -50,6 +50,7 @@ const diagnosticCpu = document.getElementById('diagnostic-cpu');
 const diagnosticGpu = document.getElementById('diagnostic-gpu');
 const diagnosticSimulation = document.getElementById('diagnostic-simulation');
 const diagnosticRenderer = document.getElementById('diagnostic-renderer');
+const diagnosticInteraction = document.getElementById('diagnostic-interaction');
 const toggleFftWavesButton = document.getElementById('toggle-fft-waves');
 const toggleWaveGeneratorButton = document.getElementById('toggle-wave-generator');
 const toggleWallsButton = document.getElementById('toggle-walls');
@@ -127,11 +128,12 @@ const wakeSourceFieldResolution = 384;
 
 const WATER_QUALITY_PRESETS = {
   low: {
+    renderSegments: 96,
     waterResolution: 256,
     foamResolution: 192,
     hullSamples: 420,
     maxSubsteps: 2,
-    reflectionCadence: 4,
+    reflectionCadence: 2,
     causticsCadence: 4,
     pixelRatio: 1.0,
     reflectionResolution: 384,
@@ -141,20 +143,22 @@ const WATER_QUALITY_PRESETS = {
     spectralOcean: false,
   },
   medium: {
+    renderSegments: 160,
     waterResolution: 384,
     foamResolution: 256,
     hullSamples: 900,
     maxSubsteps: 3,
-    reflectionCadence: 2,
+    reflectionCadence: 1,
     causticsCadence: 2,
-    pixelRatio: 1.5,
-    reflectionResolution: 640,
+    pixelRatio: 1.0,
+    reflectionResolution: 384,
     causticsResolution: 640,
     foamAdvectionScale: 0.84,
     farWakeLifetimeScale: 0.80,
     spectralOcean: true,
   },
   ultra: {
+    renderSegments: 256,
     waterResolution: 512,
     foamResolution: 384,
     hullSamples: 1600,
@@ -171,9 +175,9 @@ const WATER_QUALITY_PRESETS = {
 };
 
 const waterSystemConfig = {
-  quality: 'ultra',
+  quality: 'medium',
   fixedTimeStep: 1 / 60,
-  maxSubsteps: WATER_QUALITY_PRESETS.ultra.maxSubsteps,
+  maxSubsteps: WATER_QUALITY_PRESETS.medium.maxSubsteps,
   wavePropagationSpeed: 1.0,
   viscosity: 0.08,
   foamGenerationThreshold: 0.009,
@@ -185,7 +189,7 @@ const waterSystemConfig = {
   sternTurbulence: 1.0,
   propellerWash: 1.0,
   nearWakeLength: 0.9,
-  farWakeLifetime: 8.0,
+  farWakeLifetime: 16.0,
   windSpeed: 9.0,
   windDirection: 28 * Math.PI / 180,
   swellAmplitude: 1.0,
@@ -193,6 +197,10 @@ const waterSystemConfig = {
   waterColor: new THREE.Color(0x06364c),
   absorption: new THREE.Color(0.34, 0.11, 0.055),
   maxInteractors: 16,
+  deepWater: true,
+  // The miniature scene represents a harbour: 1 scene unit = 40 metres.
+  // g must be converted too, otherwise ship waves fall below one water texel.
+  metersPerUnit: 40,
 };
 
 // Lower values make wake waves fade sooner. Higher values let them travel farther.
@@ -229,12 +237,10 @@ let fftWavesEnabled = 1;
 let waveGeneratorEnabled = false;
 let wallsEnabled = false;
 const extraFoamRippleBoost = 0.72;
-let objectWaterSampleLimit = WATER_QUALITY_PRESETS.ultra.hullSamples;
-const objectWaterContactPadding = 0.065;
+let objectWaterSampleLimit = WATER_QUALITY_PRESETS.medium.hullSamples;
 const objectWaterMaxDepth = 0.32;
 const objectWaterVelocityResponse = 18.0;
-const objectWaterVelocityDecay = 4.0;
-const objectWaterMinVelocity = 0.002;
+const objectWaterMinVelocity = 0.006;
 const objectWaterPressureLimit = 0.16;
 const objectWaterImpulseLimit = 0.075;
 const objectWaterSegmentMaxLength = 1.8;
@@ -351,26 +357,30 @@ function loadFile(filename) {
   return new Promise((resolve, reject) => {
     const loader = new THREE.FileLoader();
 
-    loader.load(filename, (data) => {
-      resolve(data);
-    });
+    loader.load(filename, resolve, undefined, reject);
   });
 }
 
 // Shader chunks
-loadFile('shaders/utils.glsl').then((utils) => {
+Promise.all([loadFile('shaders/utils.glsl'), loadFile('shaders/ocean_sky.glsl')]).then(([utils, skyShader]) => {
   THREE.ShaderChunk['utils'] = utils;
+  THREE.ShaderChunk['oceanSky'] = skyShader;
 
   // Create Renderer
   const initialCanvasWidth = Math.max(1, canvas.clientWidth || window.innerWidth);
   const initialCanvasHeight = Math.max(1, canvas.clientHeight || window.innerHeight);
-  const camera = new THREE.PerspectiveCamera(45, initialCanvasWidth / initialCanvasHeight, 0.01, 100);
-  const cameraTarget = new THREE.Vector3(0, -0.12, 0);
+  const camera = new THREE.PerspectiveCamera(45, initialCanvasWidth / initialCanvasHeight, 0.01, 1500);
+  const cameraTarget = new THREE.Vector3(0, 0.12, 0);
+  let followVessel = true;
+  document.getElementById('camera-follow').addEventListener('click', event => {
+    followVessel = !followVessel;
+    setToggleButtonState(event.currentTarget, followVessel);
+  });
   const cameraOffset = new THREE.Vector3();
   const cameraSpherical = new THREE.Spherical();
   const minCameraDistance = 1.25;
   const maxCameraDistance = 9.0;
-  camera.position.set(0, 1.75, -5.25);
+  camera.position.set(1.0, 0.72, -2.4);
   camera.lookAt(cameraTarget);
   cameraSpherical.setFromVector3(camera.position.clone().sub(cameraTarget));
 
@@ -381,11 +391,16 @@ loadFile('shaders/utils.glsl').then((utils) => {
     camera.lookAt(cameraTarget);
   }
 
-  const renderer = new THREE.WebGLRenderer({canvas: canvas, antialias: true, alpha: true});
+  const contextOptions = { antialias: true, alpha: true };
+  const preferredContext = canvas.getContext('webgl2', contextOptions) || canvas.getContext('webgl', contextOptions);
+  const renderer = new THREE.WebGLRenderer({canvas, context: preferredContext, ...contextOptions});
   let rendererPixelRatioCap = WATER_QUALITY_PRESETS[waterSystemConfig.quality].pixelRatio;
+  let adaptiveResolutionEnabled = true;
+  let renderScale = 1;
+  let lastResolutionChange = 0;
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, rendererPixelRatioCap));
   renderer.setSize(initialCanvasWidth, initialCanvasHeight, false);
-  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.enabled = !waterSystemConfig.deepWater;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.autoClear = false;
   renderer.info.autoReset = false;
@@ -394,8 +409,12 @@ loadFile('shaders/utils.glsl').then((utils) => {
   renderer.toneMappingExposure = 1.0;
 
   const gl = renderer.getContext();
+  gl.getExtension('EXT_float_blend');
   const isWebGL2 = renderer.capabilities.isWebGL2 === true;
+  const rendererInfoExtension = gl.getExtension('WEBGL_debug_renderer_info');
+  const kelvinWake = new KelvinWakeField(THREE, waterSize);
   const runtimeCapabilities = {
+    gpuName: rendererInfoExtension ? gl.getParameter(rendererInfoExtension.UNMASKED_RENDERER_WEBGL) : 'Unavailable',
     renderer: isWebGL2 ? 'WebGL2' : 'WebGL1',
     webgpu: false,
     floatColorBuffer: isWebGL2
@@ -416,7 +435,7 @@ loadFile('shaders/utils.glsl').then((utils) => {
   function resizeRendererToCanvas() {
     const displayWidth = Math.max(1, canvas.clientWidth);
     const displayHeight = Math.max(1, canvas.clientHeight);
-    const pixelRatio = Math.min(window.devicePixelRatio || 1, rendererPixelRatioCap);
+    const pixelRatio = Math.min(window.devicePixelRatio || 1, rendererPixelRatioCap) * renderScale;
     const renderWidth = Math.floor(displayWidth * pixelRatio);
     const renderHeight = Math.floor(displayHeight * pixelRatio);
 
@@ -448,6 +467,25 @@ loadFile('shaders/utils.glsl').then((utils) => {
   );
 
   const objectScene = new THREE.Scene();
+  const skyScene = new THREE.Scene();
+  const skyMaterial = new THREE.ShaderMaterial({
+    uniforms: { sunDirection: { value: new THREE.Vector3(-0.65, 0.52, 0.56).normalize() } },
+    vertexShader: 'varying vec3 skyDirection; void main() { skyDirection = position; gl_Position = projectionMatrix * viewMatrix * vec4(position + cameraPosition, 1.0); }',
+    fragmentShader: '#include <oceanSky>\nvarying vec3 skyDirection; uniform vec3 sunDirection; void main() { gl_FragColor = vec4(oceanSkyColor(skyDirection, sunDirection), 1.0);\n #include <tonemapping_fragment>\n #include <encodings_fragment>\n }',
+    side: THREE.BackSide,
+    depthWrite: false,
+    depthTest: false,
+  });
+  skyScene.add(new THREE.Mesh(new THREE.SphereBufferGeometry(40, 24, 16), skyMaterial));
+  // Static sky radiance is captured once; reflective pixels only sample it.
+  const environmentCamera = new THREE.CubeCamera(0.1, 100, 256, {
+    format: THREE.RGBAFormat, minFilter: THREE.LinearMipMapLinearFilter,
+    magFilter: THREE.LinearFilter, generateMipmaps: true,
+  });
+  renderer.toneMapping = THREE.NoToneMapping;
+  environmentCamera.update(renderer, skyScene);
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  skyMaterial.needsUpdate = true;
   const waterBounceBounds = new THREE.Box3();
   const waterBounceRectValues = Array.from({ length: maxWaterBounceObjects }, () => new THREE.Vector4());
   const waterHullMaskValues = Array.from({ length: maxWaterHullMasks }, () => new THREE.Vector4());
@@ -482,6 +520,10 @@ loadFile('shaders/utils.glsl').then((utils) => {
   const objectWaterPosition = new THREE.Vector3();
   const objectWaterPreviousPosition = new THREE.Vector3();
   const objectWaterPropellerPosition = new THREE.Vector3();
+  const objectWaterNormal = new THREE.Vector3();
+  const objectWaterNormalMatrix = new THREE.Matrix3();
+  const objectWaterQuaternion = new THREE.Quaternion();
+  const objectWaterHeading = new THREE.Vector3();
   const objectWaterSamples = [];
   const waterInteractorBounds = new THREE.Box3();
   const waterInteractorSize = new THREE.Vector3();
@@ -548,30 +590,20 @@ loadFile('shaders/utils.glsl').then((utils) => {
     return true;
   }
 
+  function getWorldHeading(object, yawOffset = 0) {
+    object.getWorldQuaternion(objectWaterQuaternion);
+    objectWaterHeading.set(-Math.sin(yawOffset), 0, Math.cos(yawOffset)).applyQuaternion(objectWaterQuaternion);
+    return Math.atan2(objectWaterHeading.x, objectWaterHeading.z);
+  }
+
   function rebuildObjectWaterSamples(interaction) {
-    interaction.samples.length = 0;
-    interaction.collisionMesh.updateMatrixWorld(true);
-    interaction.collisionMesh.traverse((mesh) => {
-      if (
-        !mesh.isMesh ||
-        mesh.userData.ignoreWaterReaction ||
-        !mesh.geometry ||
-        !mesh.geometry.attributes ||
-        !mesh.geometry.attributes.position
-      ) {
-        return;
-      }
-
-      const position = mesh.geometry.attributes.position;
-      const stride = Math.max(1, Math.floor(position.count / interaction.sampleLimit));
-
-      for (let i = 0; i < position.count; i += stride) {
-        interaction.samples.push({
-          mesh,
-          position: new THREE.Vector3().fromBufferAttribute(position, i),
-        });
-      }
+    interaction.samples = WaterInteraction.sampleSurface(interaction.collisionMesh, interaction.sampleLimit, THREE, {
+      referenceObject: interaction.root,
+      maxLocalY: interaction.samplingMaxY,
     });
+    interaction.contactCount = 0;
+    interaction.emittingWake = false;
+    interaction.lastKelvinEmitTime = null;
   }
 
   function registerObjectWaterInteraction(root, options = {}) {
@@ -583,7 +615,8 @@ loadFile('shaders/utils.glsl').then((utils) => {
     root.getWorldPosition(objectWaterPosition);
     const tag = getWaterInteractionTag(root, options);
     const isShip = tag === waterInteractionTagShip;
-    if (isShip && !root.userData.waterHullMask) {
+    const ownsHullMask = isShip && !root.userData.waterHullMask;
+    if (ownsHullMask) {
       const hullLength = options.maxWakeLength || shipWakeBowOffset + shipWakeSternOffset;
       registerWaterHullMask(root, {
         bow: options.bow || hullLength * 0.52,
@@ -597,6 +630,7 @@ loadFile('shaders/utils.glsl').then((utils) => {
       collisionMesh: options.collisionMesh || root,
       tag,
       isShip,
+      ownsHullMask,
       objectType: options.objectType || (isShip ? 'displacementShip' : 'object'),
       previousPosition: objectWaterPosition.clone(),
       velocityX: 0,
@@ -606,8 +640,14 @@ loadFile('shaders/utils.glsl').then((utils) => {
       accelerationX: 0,
       accelerationZ: 0,
       angularVelocity: 0,
-      previousYaw: root.rotation.y,
+      previousYaw: getWorldHeading(root),
       lateralVelocity: 0,
+      measuredSpeed: 0,
+      emittingWake: false,
+      contactCount: 0,
+      contactStrength: options.contactStrength === undefined ? 1 : options.contactStrength,
+      samplingMaxY: options.samplingMaxY,
+      minWakeSpeed: options.minWakeSpeed === undefined ? objectWaterMinVelocity : options.minWakeSpeed,
       requestedSampleLimit: options.sampleLimit || WATER_QUALITY_PRESETS.ultra.hullSamples,
       sampleLimit: Math.min(
         options.sampleLimit || WATER_QUALITY_PRESETS.ultra.hullSamples,
@@ -638,6 +678,7 @@ loadFile('shaders/utils.glsl').then((utils) => {
     objectWaterInteractions.push(interaction);
     interaction.dispose = () => unregisterWaterInteractor(interaction);
     interaction.rebuildSamples = () => rebuildObjectWaterSamples(interaction);
+    interaction.resetMotion = () => resetWaterInteractorKinematics(root);
     return interaction;
   }
 
@@ -648,6 +689,8 @@ loadFile('shaders/utils.glsl').then((utils) => {
     if (index === -1) return false;
 
     const [interaction] = objectWaterInteractions.splice(index, 1);
+    kelvinWake.remove(interaction);
+    if (interaction.ownsHullMask) delete interaction.root.userData.waterHullMask;
     interaction.wakeHistory.length = 0;
     interaction.lastWakeHistoryByType = {};
     return true;
@@ -695,6 +738,9 @@ loadFile('shaders/utils.glsl').then((utils) => {
       wakeStrength: config.wakeStrength,
       wakeShape: isShipProfile ? 'ship' : config.wakeShape || 'passive',
       motorWake: isShipProfile && config.motorWake !== false,
+      minWakeSpeed: config.minWakeSpeed,
+      contactStrength: config.contactStrength,
+      samplingMaxY: config.samplingMaxY,
       bow: config.bow,
       stern: config.stern,
     });
@@ -705,9 +751,18 @@ loadFile('shaders/utils.glsl').then((utils) => {
     capabilities: runtimeCapabilities,
     config: waterSystemConfig,
     qualityPresets: WATER_QUALITY_PRESETS,
-    worldSizeMeters: { x: waterWidth, z: waterLength },
+    worldSizeMeters: { x: waterWidth * waterSystemConfig.metersPerUnit, z: waterLength * waterSystemConfig.metersPerUnit },
+    scene: objectScene,
     registerWaterInteractor,
     unregisterWaterInteractor,
+    getInteractors: () => objectWaterInteractions.map(interaction => ({
+      type: interaction.objectType,
+      isShip: interaction.isShip,
+      measuredSpeed: interaction.measuredSpeed,
+      emittingWake: interaction.emittingWake,
+      contacts: interaction.contactCount,
+      samples: interaction.samples.length,
+    })),
   };
 
   function worldXToWaterUv(value) {
@@ -732,7 +787,7 @@ loadFile('shaders/utils.glsl').then((utils) => {
         const mask = object.userData.waterHullMask;
         object.getWorldPosition(objectWaterPosition);
 
-        const heading = object.rotation.y - mask.headingYawOffset;
+        const heading = getWorldHeading(object, mask.headingYawOffset);
         const directionX = Math.sin(heading);
         const directionZ = Math.cos(heading);
         const bow = Math.max(0.001, mask.bow + mask.padding);
@@ -794,10 +849,10 @@ loadFile('shaders/utils.glsl').then((utils) => {
   }
 
   // Light direction
-  const light = [0.7559289460184544, 0.7559289460184544, -0.3779644730092272];
+  const light = skyMaterial.uniforms.sunDirection.value.toArray();
 
-  const objectAmbient = new THREE.AmbientLight(0xffffff, 0.3);
-  const objectLight = new THREE.DirectionalLight(0xffffff, 0.6);
+  const objectAmbient = new THREE.HemisphereLight(0xb8d6f0, 0x143946, 0.85);
+  const objectLight = new THREE.DirectionalLight(0xfff0d8, 1.1);
   objectLight.position.set(light[0], light[1], light[2]);
   objectLight.castShadow = true;
   objectLight.shadow.mapSize.set(1024, 1024);
@@ -976,6 +1031,10 @@ loadFile('shaders/utils.glsl').then((utils) => {
   ]);
 
   const textureloader = new THREE.TextureLoader();
+  const waterNormalTexture = textureloader.load('images/textures/waternormals.jpg');
+  waterNormalTexture.wrapS = waterNormalTexture.wrapT = THREE.RepeatWrapping;
+  waterNormalTexture.minFilter = THREE.LinearMipMapLinearFilter;
+  waterNormalTexture.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
 
   const tiles = textureloader.load('tiles.jpg');
   const waterImageTexture = textureloader.load('images/textures/water.jpg');
@@ -1107,10 +1166,14 @@ loadFile('shaders/utils.glsl').then((utils) => {
 
     stepSimulation(renderer, timeStep = waterSystemConfig.fixedTimeStep) {
       this._updateMesh.material.uniforms['rippleDistance'].value = rippleDistance;
-      this._updateMesh.material.uniforms['timeStep'].value = timeStep;
       this._updateMesh.material.uniforms['wavePropagationSpeed'].value = waterSystemConfig.wavePropagationSpeed;
       this._updateMesh.material.uniforms['viscosity'].value = waterSystemConfig.viscosity;
-      this._render(renderer, this._updateMesh);
+      // Bound the integration step at high resolution/speed. Low quality must
+      // not make waves travel faster merely because the cells are larger.
+      const rate = 120 * (this.resolution / 384) * Math.sqrt(waterSystemConfig.wavePropagationSpeed);
+      const substeps = Math.max(1, Math.ceil(timeStep * rate));
+      this._updateMesh.material.uniforms['timeStep'].value = timeStep / substeps;
+      for (let i = 0; i < substeps; i++) this._render(renderer, this._updateMesh);
     }
 
     updateNormals(renderer) {
@@ -1334,7 +1397,7 @@ loadFile('shaders/utils.glsl').then((utils) => {
 
       this.loaded = Promise.all(shadersPromises)
           .then(([vertexShader, fragmentShader]) => {
-        const material = new THREE.RawShaderMaterial({
+        const material = new THREE.ShaderMaterial({
           uniforms: {
               light: { value: light },
               water: { value: null },
@@ -1358,6 +1421,8 @@ loadFile('shaders/utils.glsl').then((utils) => {
           },
           vertexShader: vertexShader,
           fragmentShader: fragmentShader,
+          extensions: { derivatives: true },
+          toneMapped: false,
         });
 
         this._causticMesh = new THREE.Mesh(this._geometry, material);
@@ -1400,7 +1465,7 @@ loadFile('shaders/utils.glsl').then((utils) => {
   class Water {
 
     constructor() {
-      this.geometry = new THREE.PlaneBufferGeometry(waterWidth, waterLength, waterRenderSegmentsX, waterRenderSegmentsZ);
+      this.geometry = createOceanGeometry(THREE, waterWidth, WATER_QUALITY_PRESETS[waterSystemConfig.quality].renderSegments, waterSystemConfig.deepWater);
       this.causticGeometry = new THREE.PlaneBufferGeometry(waterWidth, waterLength, waterCausticSegmentsX, waterCausticSegmentsZ);
 
       const shadersPromises = [
@@ -1410,13 +1475,16 @@ loadFile('shaders/utils.glsl').then((utils) => {
 
       this.loaded = Promise.all(shadersPromises)
           .then(([vertexShader, fragmentShader]) => {
-        this.material = new THREE.RawShaderMaterial({
+        this.material = new THREE.ShaderMaterial({
           uniforms: {
               light: { value: light },
               tiles: { value: tiles },
-              sky: { value: textureCube },
+              sky: { value: environmentCamera.renderTarget.texture },
               water: { value: null },
               waterImageTexture: { value: waterImageTexture },
+              kelvinTexture: { value: kelvinWake.target.texture },
+              kelvinTexel: { value: 1 / kelvinWake.resolution },
+              waterNormalTexture: { value: waterNormalTexture },
               foamImageTexture: { value: foamImageTexture },
               shipWakeFoamTexture: { value: null },
               causticTex: { value: null },
@@ -1425,7 +1493,8 @@ loadFile('shaders/utils.glsl').then((utils) => {
               reflectionTextureMatrix: { value: reflectionTextureMatrix },
               reflectionStrength: { value: reflectionStrength },
               waterOpacity: { value: waterOpacity },
-              waterBodyColor: { value: waterSystemConfig.waterColor.clone() },
+              deepWater: { value: waterSystemConfig.deepWater ? 1 : 0 },
+              waterBodyColor: { value: waterSystemConfig.waterColor.clone().convertSRGBToLinear() },
               waterAbsorptionColor: { value: waterSystemConfig.absorption.clone() },
               waterTextureOpacity: { value: waterTextureOpacity },
               waterTextureFrequency: { value: waterTextureFrequency },
@@ -1465,6 +1534,7 @@ loadFile('shaders/utils.glsl').then((utils) => {
           },
           vertexShader: vertexShader,
           fragmentShader: fragmentShader,
+          extensions: { derivatives: true },
           transparent: true,
           depthWrite: false,
         });
@@ -1472,6 +1542,15 @@ loadFile('shaders/utils.glsl').then((utils) => {
         this.mesh = new THREE.Mesh(this.geometry, this.material);
         this.mesh.frustumCulled = false;
       });
+    }
+
+    setRenderSegments(segments) {
+      if (this.renderSegments === segments && this.extended === waterSystemConfig.deepWater) return;
+      this.geometry.dispose();
+      this.extended = waterSystemConfig.deepWater;
+      this.geometry = createOceanGeometry(THREE, waterWidth, segments, this.extended);
+      this.renderSegments = segments;
+      if (this.mesh) this.mesh.geometry = this.geometry;
     }
 
     draw(renderer, waterTexture, foamTexture, causticsTexture, time) {
@@ -1500,6 +1579,22 @@ loadFile('shaders/utils.glsl').then((utils) => {
 
   }
 
+  const reflectionMaterials = new WeakMap();
+  function getReflectionMaterial(material) {
+    if (Array.isArray(material)) return material.map(getReflectionMaterial);
+    if (!material || !material.color || material.isShaderMaterial || material.isShadowMaterial) return material;
+    let proxy = reflectionMaterials.get(material);
+    if (!proxy) {
+      proxy = new THREE.MeshLambertMaterial({ map: material.map, side: material.side,
+        transparent: material.transparent, alphaTest: material.alphaTest,
+        vertexColors: material.vertexColors, depthWrite: material.depthWrite });
+      reflectionMaterials.set(material, proxy);
+    }
+    proxy.color.copy(material.color);
+    proxy.opacity = material.opacity;
+    return proxy;
+  }
+
   function updateReflectionTexture() {
     reflectionViewPosition.copy(camera.position);
     reflectionViewPosition.y *= -1;
@@ -1522,7 +1617,25 @@ loadFile('shaders/utils.glsl').then((utils) => {
     renderer.setRenderTarget(reflectionTarget);
     renderer.setClearColor(black, 0);
     renderer.clear();
-    renderer.render(objectScene, reflectionCamera);
+    // Reflections reuse textures with lit Lambert materials and index-only LOD,
+    // without repeating full PBR/caustics or the high-detail vessel geometry.
+    const originals = [];
+    objectScene.traverse(object => {
+      if (!object.isMesh || !isVisibleInHierarchy(object)) return;
+      originals.push([object, object.material, object.geometry]);
+      object.material = getReflectionMaterial(object.material);
+      if (object.userData.reflectionGeometry) object.geometry = object.userData.reflectionGeometry;
+    });
+    const previousToneMapping = renderer.toneMapping;
+    renderer.toneMapping = THREE.NoToneMapping;
+    try { renderer.render(objectScene, reflectionCamera); }
+    finally {
+      renderer.toneMapping = previousToneMapping;
+      for (const [object, material, geometry] of originals) {
+        object.material = material;
+        object.geometry = geometry;
+      }
+    }
   }
 
 
@@ -1851,7 +1964,7 @@ class FloatingSphere {
       this.clampToPool();
     }
 
-    update(waterLevel) {
+    update(waterLevel, deltaTime) {
       this.waterLevel = waterLevel;
 
       if (draggedVessel === this) {
@@ -1860,15 +1973,18 @@ class FloatingSphere {
         return;
       }
 
-      const bottom = this.mesh.position.y - this.radius;
-      const submergedDepth = Math.min(Math.max(this.waterLevel - bottom, 0), this.radius * 2);
-      const submergedRatio = submergedDepth / (this.radius * 2);
-      const gravity = -0.0035;
-      const buoyancyForce = this.buoyancy * submergedRatio * 0.007;
-
-      this.velocity += gravity + buoyancyForce;
-      this.velocity *= 0.985;
-      this.mesh.position.y += this.velocity;
+      const substeps = Math.max(1, Math.ceil(deltaTime * 120));
+      const dt = deltaTime / substeps;
+      for (let i = 0; i < substeps; i++) {
+        const bottom = this.mesh.position.y - this.radius;
+        const depth = clamp(this.waterLevel - bottom, 0, this.radius * 2);
+        // Exact spherical-cap volume; demonstration density is half water.
+        const submergedRatio = depth * depth * (this.radius - depth / 3) /
+          (4 * Math.pow(this.radius, 3) / 3);
+        this.velocity += (-9.81 + this.buoyancy * submergedRatio * 19.62) * dt;
+        this.velocity *= Math.exp(-dt * 2.4);
+        this.mesh.position.y += this.velocity * dt;
+      }
 
       if (this.mesh.position.y < this.floorLevel) {
         this.mesh.position.y = this.floorLevel;
@@ -1938,6 +2054,10 @@ class FloatingSphere {
         headingYawOffset: shipMovementYawOffset,
       });
 
+      const reflectionLods = loadFile('models/cargo_03.reflection-indices.json').then(JSON.parse).catch(error => {
+        console.warn('Reflection LOD unavailable; retaining full geometry.', error);
+        return {};
+      });
       this.loaded = new Promise((resolve) => {
         if (!THREE.GLTFLoader) {
           console.error('THREE.GLTFLoader is not available.');
@@ -1946,8 +2066,21 @@ class FloatingSphere {
         }
 
         const loader = new THREE.GLTFLoader();
-        loader.load('models/cargo_03.glb', (gltf) => {
+        loader.load('models/cargo_03.optimized.glb', async (gltf) => {
           const model = gltf.scene;
+          const lods = await reflectionLods;
+          model.traverse(child => {
+            if (!child.isMesh) return;
+            const lod = lods[child.userData.name || child.name];
+            const source = child.geometry;
+            if (!lod || source.attributes.position.count !== lod.vertices || source.index.count !== lod.originalIndices) return;
+            const geometry = new THREE.BufferGeometry();
+            for (const [name, attribute] of Object.entries(source.attributes)) geometry.setAttribute(name, attribute);
+            geometry.setIndex(lod.indices);
+            geometry.boundingBox = source.boundingBox;
+            geometry.boundingSphere = source.boundingSphere;
+            child.userData.reflectionGeometry = geometry;
+          });
           const originalBox = new THREE.Box3().setFromObject(model);
           const originalSize = originalBox.getSize(new THREE.Vector3());
           const maxDeckSize = Math.max(originalSize.x, originalSize.z);
@@ -1980,6 +2113,7 @@ class FloatingSphere {
             draft: this.draft,
             displacedVolume: (this.wakeExtents.bow + this.wakeExtents.stern) * this.wakeExtents.beam * this.draft * 0.58,
             sampleCount: WATER_QUALITY_PRESETS.ultra.hullSamples,
+            samplingMaxY: this.draft + 0.08,
             radiusScale: 1.0,
             wakeStrength: 1.18,
             turbulenceStrength: 1.12,
@@ -2128,7 +2262,7 @@ class FloatingSphere {
 
       this.waterLevel = samples.center;
       const previousTime = this.previousUpdateTime === null ? time : this.previousUpdateTime;
-      const deltaTime = Math.min(0.05, Math.max(0, time - previousTime));
+      const deltaTime = Math.min(maxSimulationDelta * waterSystemConfig.maxSubsteps, Math.max(0, time - previousTime));
       const yawBlend = 1 - Math.exp(-deltaTime * shipYawSmoothness);
       const yawDelta = shortestAngleDelta(this.group.rotation.y, this.targetYaw);
       const tiltBlend = 1 - Math.exp(-deltaTime * shipWaveTiltSmoothness);
@@ -2239,6 +2373,7 @@ class FloatingSphere {
   const debug = new Debug();
 
   const debugViewModes = {
+    kelvin: { field: 'kelvin', mode: 6 },
     off: { mode: 0, field: null },
     height: { mode: 1, field: 'water' },
     velocity: { mode: 2, field: 'water' },
@@ -2316,8 +2451,15 @@ class FloatingSphere {
   let diagnosticsWindowStart = performance.now();
   let diagnosticsFrameCount = 0;
   let diagnosticsCpuMilliseconds = 0;
+  const frameIntervals = [];
+  const diagnosticPacing = document.getElementById('diagnostic-pacing');
+  let frameStageTimes = { source: 0, simulation: 0, draw: 0 };
+  let localReactionActiveUntil = 0;
+  let lastSphereWakeProbeTime = -Infinity;
+  let sphereLocalWakeHeight = 0;
 
   function clearDynamicWake() {
+    kelvinWake.clear();
     clearObjectPressureField();
     clearWakeSourceField();
     objectPressureTexture.needsUpdate = true;
@@ -2326,8 +2468,11 @@ class FloatingSphere {
     foamSimulation.clear(renderer);
     simulationAccumulator = 0;
     sourceMotionAccumulator = 0;
+    localReactionActiveUntil = 0;
+    sphereLocalWakeHeight = 0;
 
     for (const interaction of objectWaterInteractions) {
+      interaction.lastKelvinEmitTime = null;
       interaction.wakeHistory.length = 0;
       interaction.lastWakeHistoryByType = {};
       interaction.hasWakeDirection = false;
@@ -2348,8 +2493,16 @@ class FloatingSphere {
     interaction.accelerationZ = 0;
     interaction.angularVelocity = 0;
     interaction.lateralVelocity = 0;
-    interaction.previousYaw = root.rotation.y;
+    interaction.previousYaw = getWorldHeading(root);
     interaction.hasWakeDirection = false;
+    interaction.measuredSpeed = 0;
+    interaction.emittingWake = false;
+    root.updateWorldMatrix(true, true);
+    interaction.lastKelvinEmitTime = null;
+    for (const sample of interaction.samples) {
+      sample.previousWorld.copy(sample.position).applyMatrix4(sample.mesh.matrixWorld);
+      sample.previousDepth = null;
+    }
   }
 
   function updateQualityButtons() {
@@ -2372,19 +2525,24 @@ class FloatingSphere {
     waterSystemConfig.quality = name;
     waterSystemConfig.maxSubsteps = getPresetSubstepLimit(preset);
     rendererPixelRatioCap = preset.pixelRatio;
+    renderScale = 1;
     objectWaterSampleLimit = preset.hullSamples;
     waterSimulation.setResolution(renderer, preset.waterResolution);
+    water.setRenderSegments(preset.renderSegments);
     foamSimulation.setResolution(renderer, preset.foamResolution);
     reflectionTarget.setSize(preset.reflectionResolution, preset.reflectionResolution);
     caustics.setResolution(preset.causticsResolution);
     fftWavesEnabled = preset.spectralOcean ? 1 : 0;
 
     for (const interaction of objectWaterInteractions) {
-      interaction.sampleLimit = Math.min(
+      const sampleLimit = Math.min(
         interaction.requestedSampleLimit || preset.hullSamples,
         preset.hullSamples
       );
-      rebuildObjectWaterSamples(interaction);
+      if (sampleLimit !== interaction.sampleLimit) {
+        interaction.sampleLimit = sampleLimit;
+        rebuildObjectWaterSamples(interaction);
+      }
     }
 
     if (water.material) {
@@ -2414,14 +2572,36 @@ class FloatingSphere {
     if (elapsed < 500) return;
 
     const gpuMilliseconds = gpuFrameTimer.poll();
+    // Hysteresis and slow recovery avoid resolution flicker. Background-tab
+    // throttling is not a GPU bottleneck and must not lower quality.
+    if (adaptiveResolutionEnabled && document.visibilityState === 'visible' &&
+        debugView === 'off' && gpuMilliseconds !== null && now - lastResolutionChange > 2500) {
+      const next = gpuMilliseconds > 20 ? Math.max(.7, renderScale - .05)
+        : gpuMilliseconds < 12 ? Math.min(1, renderScale + .025) : renderScale;
+      if (next !== renderScale) { renderScale = next; lastResolutionChange = now; }
+    }
     diagnosticFps.textContent = (diagnosticsFrameCount * 1000 / elapsed).toFixed(0);
+    if (frameIntervals.length > 1) {
+      const sorted = frameIntervals.slice().sort((a, b) => a - b);
+      const mean = frameIntervals.reduce((sum, value) => sum + value, 0) / frameIntervals.length;
+      diagnosticPacing.textContent = (1000 / mean).toFixed(0) + ' FPS avg · p95 ' +
+        sorted[Math.floor((sorted.length - 1) * .95)].toFixed(1) + ' ms (' + sorted.length + ' frames)';
+    }
     diagnosticCpu.textContent = diagnosticsCpuMilliseconds.toFixed(2) + ' ms';
+    document.getElementById('diagnostic-stages').textContent = 'sources ' + frameStageTimes.source.toFixed(1) +
+      ' · fields ' + frameStageTimes.simulation.toFixed(1) + ' · draw ' + frameStageTimes.draw.toFixed(1) + ' ms';
     diagnosticGpu.textContent = gpuMilliseconds === null ? 'unavailable' : gpuMilliseconds.toFixed(2) + ' ms';
+    diagnosticGpu.title = runtimeCapabilities.gpuName;
+    diagnosticGpu.setAttribute('data-renderer', runtimeCapabilities.gpuName);
     diagnosticSimulation.textContent =
       waterSimulation.resolution + ' / ' + foamSimulation.resolution + ' px, ' + simulationSteps + ' steps';
     diagnosticRenderer.textContent =
       runtimeCapabilities.renderer + ', ' + renderer.info.render.calls + ' calls, ' +
-      renderer.info.render.triangles + ' tris';
+      renderer.info.render.triangles + ' tris · ' + Math.round(renderScale * 100) + '% pixels';
+    const ships = objectWaterInteractions.filter(interaction => interaction.isShip);
+    const active = ships.filter(interaction => interaction.emittingWake).length;
+    diagnosticInteraction.textContent = active + '/' + ships.length + ' ships emitting · ' +
+      objectWaterInteractions.reduce((sum, interaction) => sum + interaction.contactCount, 0) + ' wet samples · ' + kelvinWake.packets.length + ' directional packets';
     diagnosticsWindowStart = now;
     diagnosticsFrameCount = 0;
   }
@@ -2430,14 +2610,68 @@ class FloatingSphere {
     clearWake: clearDynamicWake,
     setDebugView,
     setQuality: applyQualityPreset,
+    sampleHeights: (points) => {
+      if (!Array.isArray(points) || points.length > 8 || points.some(point => !Number.isFinite(point.x) || !Number.isFinite(point.z))) {
+        throw new Error('sampleHeights accepts up to 8 finite world-space { x, z } points.');
+      }
+      return sampleTotalWaterHeights(points, waterSimulation.texture.texture, simulationTime);
+    },
+    setMotion: (mode) => {
+      if (![shipMovementModeRandom, shipMovementModeStraight, shipMovementModeCircle,
+        shipMovementModeSTurn, shipMovementModeGeometry, shipMovementModeStopped].includes(mode)) {
+        throw new Error('Unknown ship motion mode: ' + mode);
+      }
+      setShipMovementMode(mode);
+    },
     getDiagnostics: () => ({
       cpuMilliseconds: diagnosticsCpuMilliseconds,
       gpuMilliseconds: gpuFrameTimer.lastMilliseconds,
       waterResolution: waterSimulation.resolution,
       foamResolution: foamSimulation.resolution,
       simulationFrame,
+      wakePackets: kelvinWake.packets.length,
+      wakePacketCapacity: kelvinWake.capacity,
+      renderTriangles: renderer.info.render.triangles,
+      renderCalls: renderer.info.render.calls,
+      documentVisible: document.visibilityState === 'visible',
+      renderScale,
     }),
   });
+  document.getElementById('adaptive-resolution').addEventListener('click', (event) => {
+    adaptiveResolutionEnabled = !adaptiveResolutionEnabled;
+    if (!adaptiveResolutionEnabled) renderScale = 1;
+    setToggleButtonState(event.currentTarget, adaptiveResolutionEnabled);
+  });
+
+  const seaPresets = {
+    harbor: { amplitude: 0.018, frequency: 0.75, wind: 4.5, chop: 0.7, swell: 0.8 },
+    ocean: { amplitude: 0.044, frequency: 0.65, wind: 10, chop: 1.18, swell: 1.15 },
+    rough: { amplitude: 0.060, frequency: 0.8, wind: 15, chop: 1.25, swell: 1.05 },
+  };
+  function setSeaState(name) {
+    const preset = seaPresets[name];
+    if (!preset) throw new Error('Unknown sea state: ' + name);
+    for (const [slider, input, value] of [
+      [waveAmplitudeSlider, waveAmplitudeValue, preset.amplitude],
+      [waveFrequencySlider, waveFrequencyValue, preset.frequency],
+      [windSpeedSlider, windSpeedValue, preset.wind],
+      [choppinessSlider, choppinessValue, preset.chop],
+      [swellAmplitudeSlider, swellAmplitudeValue, preset.swell],
+    ]) {
+      setControlValue(slider, input, value);
+      slider.dispatchEvent(new Event('input'));
+    }
+    document.getElementById('sea-state').value = name;
+  }
+  document.getElementById('sea-state').addEventListener('change', event => setSeaState(event.target.value));
+  document.getElementById('toggle-deep-water').addEventListener('click', event => {
+    waterSystemConfig.deepWater = !waterSystemConfig.deepWater;
+    renderer.shadowMap.enabled = !waterSystemConfig.deepWater;
+    water.material.uniforms.deepWater.value = waterSystemConfig.deepWater ? 1 : 0;
+    water.setRenderSegments(WATER_QUALITY_PRESETS[waterSystemConfig.quality].renderSegments);
+    setToggleButtonState(event.currentTarget, waterSystemConfig.deepWater);
+  });
+  window.waterLab.setSeaState = setSeaState;
 
   function decimalsForStep(step) {
     const text = String(step);
@@ -2717,7 +2951,7 @@ class FloatingSphere {
   waterColorInput.addEventListener('input', () => {
     waterSystemConfig.waterColor.set(waterColorInput.value);
     if (water.material) {
-      water.material.uniforms['waterBodyColor'].value.copy(waterSystemConfig.waterColor);
+      water.material.uniforms['waterBodyColor'].value.copy(waterSystemConfig.waterColor).convertSRGBToLinear();
     }
   });
 
@@ -2731,6 +2965,7 @@ class FloatingSphere {
   function setToggleButtonState(button, enabled) {
     button.classList.toggle('is-info', enabled);
     button.classList.toggle('is-light', !enabled);
+    button.setAttribute('aria-pressed', String(enabled));
   }
 
   function updateShipMovementModeButtons() {
@@ -3143,7 +3378,7 @@ class FloatingSphere {
     }
 
     const previousTime = shipAutoLastTime === null ? time : shipAutoLastTime;
-    const deltaTime = Math.min(0.05, Math.max(0, time - previousTime));
+    const deltaTime = Math.min(maxSimulationDelta * waterSystemConfig.maxSubsteps, Math.max(0, time - previousTime));
     shipAutoLastTime = time;
 
     if (deltaTime <= 0) return;
@@ -3318,7 +3553,7 @@ class FloatingSphere {
   function sampleTotalWaterHeights(points, waterTexture, time) {
     const wakeHeights = waterHeightProbe.sample(renderer, waterTexture, points);
     return points.map((point, index) =>
-      wakeHeights[index] * wakeWaveStrength + getOceanHeightAt(point.x, point.z, time)
+      wakeHeights[index] * wakeWaveStrength + getOceanHeightAt(point.x, point.z, time) + kelvinWake.sample(point.x, point.z)
     );
   }
 
@@ -3400,7 +3635,7 @@ class FloatingSphere {
       interaction.velocityX * interaction.velocityX +
       interaction.velocityZ * interaction.velocityZ
     );
-    const froudeNumber = speed / Math.sqrt(9.81 * Math.max(hullLength, 0.01));
+    const froudeNumber = speed / Math.sqrt(9.81 / waterSystemConfig.metersPerUnit * Math.max(hullLength, 0.01));
     const highSpeedNarrowing = smoothStep(0.42, 1.15, froudeNumber);
     return objectWaterKelvinAngle * (1 - highSpeedNarrowing * 0.46);
   }
@@ -3423,14 +3658,14 @@ class FloatingSphere {
       z: trailing.z,
       axisX: trailX,
       axisZ: trailZ,
-      length: Math.max(length * waterSystemConfig.nearWakeLength, beam * 2.4),
-      startWidth: Math.max(beam * 0.20, 0.018),
-      endWidth: Math.max(beam * 0.36, 0.034),
-      intensity: foamSpeed * 0.82,
+      length: Math.max(length * waterSystemConfig.nearWakeLength * 0.48, beam * 1.7),
+      startWidth: Math.max(beam * 0.42, 0.026),
+      endWidth: Math.max(beam * 1.3, 0.070),
+      intensity: foamSpeed * 0.70,
       churn: 1.0,
     });
 
-    for (const propellerPoint of interaction.propellerPoints) {
+    for (const propellerPoint of interaction.motorWake ? interaction.propellerPoints : []) {
       objectWaterPropellerPosition
         .set(propellerPoint.x, propellerPoint.y, propellerPoint.z)
         .applyMatrix4(interaction.root.matrixWorld);
@@ -3439,9 +3674,9 @@ class FloatingSphere {
         z: objectWaterPropellerPosition.z,
         axisX: trailX,
         axisZ: trailZ,
-        length: Math.max(length * 0.86, beam * 2.4),
-        startWidth: Math.max(beam * 0.10, 0.012),
-        endWidth: Math.max(beam * 0.26, 0.026),
+        length: Math.max(length * 0.42, beam * 1.8),
+        startWidth: Math.max(beam * 0.18, 0.015),
+        endWidth: Math.max(beam * 0.72, 0.040),
         intensity: foamSpeed,
         churn: 1.0,
       });
@@ -3672,6 +3907,69 @@ class FloatingSphere {
     }
   }
 
+  function updateGeometryContact(interaction, dt, time) {
+    const contacts = [];
+    let previousMesh = null;
+    const cellSize = Math.max(waterWidth, waterLength) / objectPressureFieldResolution;
+    interaction.root.updateWorldMatrix(true, true);
+    for (const sample of interaction.samples) {
+      const mesh = sample.mesh;
+      if (!isVisibleInHierarchy(mesh)) {
+        sample.previousDepth = null;
+        sample.previousWorld.copy(sample.position).applyMatrix4(mesh.matrixWorld);
+        continue;
+      }
+      objectWaterVertex.copy(sample.position).applyMatrix4(mesh.matrixWorld);
+      const velocity = {
+        x: (objectWaterVertex.x - sample.previousWorld.x) / dt,
+        z: (objectWaterVertex.z - sample.previousWorld.z) / dt,
+      };
+      sample.previousWorld.copy(objectWaterVertex);
+      const waterHeight = getOceanHeightAt(objectWaterVertex.x, objectWaterVertex.z, time);
+      const depth = waterHeight - objectWaterVertex.y;
+      const previousDepth = sample.previousDepth;
+      sample.previousDepth = depth;
+      if (Math.abs(objectWaterVertex.x) > waterHalfWidth || Math.abs(objectWaterVertex.z) > waterHalfLength) continue;
+      const maxDepth = Math.max(objectWaterMaxDepth, interaction.draft * 2.5);
+      if (depth < -0.008 || depth > maxDepth) continue;
+      contacts.push({
+        x: objectWaterVertex.x,
+        z: objectWaterVertex.z,
+        immersion: smoothStep(-0.008, Math.max(0.008, interaction.draft), depth),
+      });
+      if (mesh !== previousMesh) {
+        objectWaterNormalMatrix.getNormalMatrix(mesh.matrixWorld);
+        previousMesh = mesh;
+      }
+      objectWaterNormal.copy(sample.normal).applyMatrix3(objectWaterNormalMatrix).normalize();
+      const response = WaterInteraction.contactResponse(objectWaterNormal, velocity, depth,
+        previousDepth, dt, interaction.draft, interaction.contactStrength);
+      // Translating ship geometry drives the dispersive model below. Feeding
+      // the same contact into the isotropic pool solver creates expanding rings.
+      // General objects (splashes, bobbing buoys) retain local radial reactions.
+      if (interaction.isShip) continue;
+      if (!response) continue;
+      const normalLength = Math.hypot(objectWaterNormal.x, objectWaterNormal.z);
+      // Each splat represents surface area, so tessellation/sample budget does
+      // not multiply the force. Large faces cover multiple water cells.
+      const radius = Math.max(cellSize * 0.8, Math.sqrt(sample.area) * 0.7);
+      const areaWeight = Math.min(1, sample.area / (radius * radius * Math.PI));
+      splatObjectPressure({
+        x: objectWaterVertex.x,
+        z: objectWaterVertex.z,
+        axisX: normalLength > 0.001 ? objectWaterNormal.x / normalLength : 1,
+        axisZ: normalLength > 0.001 ? objectWaterNormal.z / normalLength : 0,
+        halfLength: radius,
+        halfWidth: radius,
+        target: response.target * areaWeight,
+        impulse: response.impulse * areaWeight,
+        turbulence: response.turbulence,
+      });
+    }
+    interaction.contactPoints = contacts;
+    interaction.contactCount = contacts.length;
+  }
+
   function collectObjectWaterContacts(interaction, directionX, directionZ, sideX, sideZ) {
     const result = {
       points: objectWaterSamples,
@@ -3683,35 +3981,16 @@ class FloatingSphere {
 
     objectWaterSamples.length = 0;
 
-    for (const sample of interaction.samples) {
-      const mesh = sample.mesh;
-      if (!mesh.visible) continue;
-
-      objectWaterVertex.copy(sample.position).applyMatrix4(mesh.matrixWorld);
-
-      if (
-        objectWaterVertex.x < -waterHalfWidth ||
-        objectWaterVertex.x > waterHalfWidth ||
-        objectWaterVertex.z < -waterHalfLength ||
-        objectWaterVertex.z > waterHalfLength
-      ) {
-        continue;
-      }
-
-      const waterHeight = getOceanHeightAt(objectWaterVertex.x, objectWaterVertex.z, simulationTime);
-      const depth = waterHeight + objectWaterContactPadding - objectWaterVertex.y;
-      if (depth < 0 || depth > objectWaterMaxDepth) continue;
-
-      const along = objectWaterVertex.x * directionX + objectWaterVertex.z * directionZ;
-      const side = objectWaterVertex.x * sideX + objectWaterVertex.z * sideZ;
-      const immersion = smoothStep(0, objectWaterMaxDepth, depth);
+    for (const point of interaction.contactPoints || []) {
+      const along = point.x * directionX + point.z * directionZ;
+      const side = point.x * sideX + point.z * sideZ;
 
       result.points.push({
-        x: objectWaterVertex.x,
-        z: objectWaterVertex.z,
+        x: point.x,
+        z: point.z,
         along,
         side,
-        immersion,
+        immersion: point.immersion,
       });
       result.minAlong = Math.min(result.minAlong, along);
       result.maxAlong = Math.max(result.maxAlong, along);
@@ -3945,7 +4224,7 @@ class FloatingSphere {
       0.72
     );
 
-    const propWash = objectWaterPropWashStrength *
+    const propWash = (interaction.motorWake ? objectWaterPropWashStrength : 0) *
       pressureScale *
       waterSystemConfig.propellerWash *
       interaction.turbulenceStrength;
@@ -4385,7 +4664,7 @@ class FloatingSphere {
   function getObjectWakeHeadingAlignment(interaction, directionX, directionZ) {
     if (!interaction.maxWakeLength || !interaction.maxWakeBeam) return 1;
 
-    const heading = interaction.root.rotation.y - interaction.headingYawOffset;
+    const heading = getWorldHeading(interaction.root, interaction.headingYawOffset);
     const headingX = Math.sin(heading);
     const headingZ = Math.cos(heading);
 
@@ -4468,7 +4747,7 @@ class FloatingSphere {
     const bowLeft = getWakeSliceSidePoint(bow, directionX, directionZ, sideX, sideZ, -1);
     const bowRight = getWakeSliceSidePoint(bow, directionX, directionZ, sideX, sideZ, 1);
 
-    addContinuousHullPressure(
+    if (!interaction.isShip) addContinuousHullPressure(
       interaction,
       contacts,
       shiftedSlices,
@@ -4543,20 +4822,25 @@ class FloatingSphere {
 
     for (const interaction of objectWaterInteractions) {
       const root = interaction.root;
+      interaction.emittingWake = false;
+      interaction.contactCount = 0;
 
-      if (!root.visible) {
+      if (!isVisibleInHierarchy(root)) {
+        kelvinWake.remove(interaction);
+        interaction.lastKelvinEmitTime = null;
         root.getWorldPosition(interaction.previousPosition);
         interaction.velocityX = 0;
         interaction.velocityZ = 0;
         interaction.accelerationX = 0;
         interaction.accelerationZ = 0;
         interaction.angularVelocity = 0;
-        interaction.previousYaw = root.rotation.y;
+        interaction.previousYaw = getWorldHeading(root);
         interaction.lateralVelocity = 0;
         interaction.hasWakeDirection = false;
         interaction.wakeTurnAmount = 0;
         interaction.wakeHistory.length = 0;
         interaction.lastWakeHistoryByType = {};
+        resetWaterInteractorKinematics(root);
         continue;
       }
 
@@ -4566,21 +4850,22 @@ class FloatingSphere {
       const rawVelocityX = (objectWaterPosition.x - objectWaterPreviousPosition.x) / dt;
       const rawVelocityZ = (objectWaterPosition.z - objectWaterPreviousPosition.z) / dt;
       const response = 1 - Math.exp(-dt * objectWaterVelocityResponse);
-      const decay = Math.exp(-dt * objectWaterVelocityDecay);
       const previousVelocityX = interaction.velocityX;
       const previousVelocityZ = interaction.velocityZ;
 
-      interaction.velocityX = interaction.velocityX * decay + (rawVelocityX - interaction.velocityX) * response;
-      interaction.velocityZ = interaction.velocityZ * decay + (rawVelocityZ - interaction.velocityZ) * response;
-      const rawAccelerationX = (interaction.velocityX - previousVelocityX) / dt;
-      const rawAccelerationZ = (interaction.velocityZ - previousVelocityZ) / dt;
+      const motion = WaterInteraction.advanceMotion(interaction, rawVelocityX, rawVelocityZ, dt, {
+        isShip: interaction.isShip, threshold: interaction.minWakeSpeed, fullSpeed: objectWaterFullWakeVelocity,
+      });
+      interaction.measuredSpeed = motion.rawSpeed;
+      const rawAccelerationX = motion.accelerationX;
+      const rawAccelerationZ = motion.accelerationZ;
       const accelerationResponse = 1 - Math.exp(-dt * 8.0);
       interaction.accelerationX += (rawAccelerationX - interaction.accelerationX) * accelerationResponse;
       interaction.accelerationZ += (rawAccelerationZ - interaction.accelerationZ) * accelerationResponse;
       interaction.previousVelocityX = previousVelocityX;
       interaction.previousVelocityZ = previousVelocityZ;
 
-      const currentYaw = root.rotation.y;
+      const currentYaw = getWorldHeading(root);
       const rawAngularVelocity = shortestAngleDelta(interaction.previousYaw, currentYaw) / dt;
       interaction.angularVelocity += (rawAngularVelocity - interaction.angularVelocity) * response;
       interaction.previousYaw = currentYaw;
@@ -4590,30 +4875,61 @@ class FloatingSphere {
         interaction.velocityX * interaction.velocityX +
         interaction.velocityZ * interaction.velocityZ
       );
-      const heading = currentYaw - interaction.headingYawOffset;
+      const heading = getWorldHeading(root, interaction.headingYawOffset);
       const headingX = Math.sin(heading);
       const headingZ = Math.cos(heading);
       const headingSideX = -headingZ;
       const headingSideZ = headingX;
       interaction.lateralVelocity = interaction.velocityX * headingSideX + interaction.velocityZ * headingSideZ;
-      const rotationalSpeed = Math.abs(interaction.angularVelocity) * Math.max(0.01, interaction.maxWakeBeam || 0.1) * 0.5;
-      const effectiveVelocity = Math.max(velocityLength, rotationalSpeed);
+      const effectiveVelocity = velocityLength;
+      // Geometry-local reaction is evaluated even at rest, while directional
+      // sources require current translational motion. Rotation alone cannot
+      // turn a moored ship's bow/stern into navigation-wake emitters.
+      updateGeometryContact(interaction, dt, time);
 
-      if (effectiveVelocity < objectWaterMinVelocity) {
+      if (!motion.moving) {
+        interaction.lastKelvinEmitTime = null;
         interaction.hasWakeDirection = false;
         interaction.wakeTurnAmount *= 0.85;
         if (!interaction.isShip) renderWakeHistory(interaction, time);
         continue;
       }
 
-      const speedAmount = smoothStep(objectWaterMinVelocity, objectWaterFullWakeVelocity, effectiveVelocity);
+      const speedAmount = motion.speedAmount;
       if (speedAmount <= 0.001) {
         if (!interaction.isShip) renderWakeHistory(interaction, time);
         continue;
       }
+      interaction.emittingWake = motion.shipWakeActive && interaction.contactCount > 1;
 
       const directionX = velocityLength > objectWaterMinVelocity ? interaction.velocityX / velocityLength : headingX;
       const directionZ = velocityLength > objectWaterMinVelocity ? interaction.velocityZ / velocityLength : headingZ;
+      if (interaction.emittingWake) {
+        const interval = 1 / 6;
+        const last = interaction.lastKelvinEmitTime;
+        const elapsed = last == null ? interval : time - last;
+        if (elapsed >= interval) {
+          const sideX = -directionZ, sideZ = directionX;
+          const contacts = collectObjectWaterContacts(interaction, directionX, directionZ, sideX, sideZ);
+          if (contacts) {
+            const dimensions = getObjectWakeDimensions(interaction, contacts);
+            const center = wakeAxesToWorld((contacts.minAlong + contacts.maxAlong) * .5,
+              (contacts.minSide + contacts.maxSide) * .5, directionX, directionZ, sideX, sideZ);
+            kelvinWake.add(KelvinWake.emit({ ...center, dx: directionX, dz: directionZ,
+              speed: motion.rawSpeed, length: dimensions.length, beam: dimensions.beam,
+              draft: interaction.draft, gravity: 9.81 / waterSystemConfig.metersPerUnit,
+              time, dt: Math.min(elapsed, interval * 2), isShip: true, owner: interaction,
+              minSpeed: interaction.minWakeSpeed,
+              minWavelength: waterWidth / Math.min(kelvinWake.resolution,
+                WATER_QUALITY_PRESETS[waterSystemConfig.quality].renderSegments) * 4,
+              strength: interaction.strengthScale * objectWakeHeightScale * waterSystemConfig.hullImpulseStrength,
+              bowStrength: waterSystemConfig.bowWaveStrength,
+              sternStrength: waterSystemConfig.sternTurbulence,
+            }));
+          }
+          interaction.lastKelvinEmitTime = time;
+        }
+      }
       const pathTurn = updateObjectWakeTurn(interaction, directionX, directionZ);
       const angularTurn = clamp(interaction.angularVelocity * 2.4, -1, 1);
       const lateralTurn = clamp(interaction.lateralVelocity / Math.max(effectiveVelocity, 0.001), -1, 1);
@@ -4653,6 +4969,10 @@ class FloatingSphere {
     }
 
     updateWaveEmitters(time);
+    if (waveGeneratorEnabled || objectWaterInteractions.some(interaction =>
+      !interaction.isShip && interaction.contactCount > 0 && isVisibleInHierarchy(interaction.root))) {
+      localReactionActiveUntil = time + 8;
+    }
     finalizeObjectPressureField();
     objectPressureTexture.needsUpdate = true;
     wakeSourceTexture.needsUpdate = true;
@@ -4678,6 +4998,10 @@ class FloatingSphere {
 
     const now = performance.now() * 0.001;
     const realDelta = previousFrameTime === null ? 0 : Math.max(0, now - previousFrameTime);
+    if (realDelta > 0 && document.visibilityState === 'visible') {
+      frameIntervals.push(realDelta * 1000);
+      if (frameIntervals.length > 300) frameIntervals.shift();
+    }
     const deltaTime = Math.min(realDelta, maxSimulationDelta * waterSystemConfig.maxSubsteps);
     previousFrameTime = now;
     simulationTime += deltaTime;
@@ -4695,28 +5019,26 @@ class FloatingSphere {
       waterSystemConfig.maxSubsteps,
       Math.floor(simulationAccumulator / fixedTimeStep)
     );
+    let sourceEnd = performance.now();
 
     if (simulationSteps > 0) {
       updateObjectWaterInteractions(sourceMotionAccumulator, time);
+      sourceEnd = performance.now();
       sourceMotionAccumulator = 0;
 
       for (let step = 0; step < simulationSteps; step++) {
-        waterSimulation.stepSimulation(renderer, fixedTimeStep);
-        foamSimulation.step(
-          renderer,
-          waterSimulation.texture.texture,
-          wakeSourceTexture,
-          time,
-          fixedTimeStep
-        );
+        if (time < localReactionActiveUntil) waterSimulation.stepSimulation(renderer, fixedTimeStep);
         simulationAccumulator -= fixedTimeStep;
         simulationFrame++;
       }
 
-      waterSimulation.updateNormals(renderer);
+      if (time < localReactionActiveUntil) waterSimulation.updateNormals(renderer);
+      foamSimulation.step(renderer, waterSimulation.texture.texture, wakeSourceTexture,
+        time, Math.min(.05, simulationSteps * fixedTimeStep));
     }
 
     const waterTexture = waterSimulation.texture.texture;
+    kelvinWake.update(renderer, time, waterSystemConfig.farWakeLifetime);
     const spherePoint = {
       x: floatingSphere.mesh.position.x,
       z: floatingSphere.mesh.position.z,
@@ -4730,8 +5052,16 @@ class FloatingSphere {
       shipProbePoints.left,
       shipProbePoints.right,
     ];
-    const probeHeights = sampleTotalWaterHeights(probePoints, waterTexture, time);
-    floatingSphere.update(probeHeights[0]);
+    // Boat waves/ocean are analytic on the CPU too. Do not fence the entire GPU
+    // queue for six float pixels each frame. Only visible passive objects need
+    // the local ripple readback, sampled at 15 Hz rather than render frequency.
+    if (floatingSphere.mesh.visible && time - lastSphereWakeProbeTime >= 1 / 15) {
+      sphereLocalWakeHeight = waterHeightProbe.sample(renderer, waterTexture, [spherePoint])[0] * wakeWaveStrength;
+      lastSphereWakeProbeTime = time;
+    }
+    const probeHeights = probePoints.map(point => getOceanHeightAt(point.x, point.z, time) + kelvinWake.sample(point.x, point.z));
+    probeHeights[0] += sphereLocalWakeHeight;
+    floatingSphere.update(probeHeights[0], deltaTime);
     cargoShip.update({
       center: probeHeights[1],
       bow: probeHeights[2],
@@ -4739,12 +5069,23 @@ class FloatingSphere {
       left: probeHeights[4],
       right: probeHeights[5],
     }, time);
+    if (followVessel && cargoShip.visible && !draggedVessel) {
+      const response = 1 - Math.exp(-deltaTime * 2.5);
+      cameraTarget.x += (cargoShip.group.position.x - cameraTarget.x) * response;
+      cameraTarget.z += (cargoShip.group.position.z - cameraTarget.z) * response;
+      updateCameraFromOrbit();
+    }
+    const fieldEnd = performance.now();
+    frameStageTimes.source = sourceEnd - frameCpuStart;
+    frameStageTimes.simulation = fieldEnd - sourceEnd;
 
     const debugMode = debugViewModes[debugView];
     if (debugMode && debugMode.field) {
       const debugTexture = debugMode.field === 'water'
         ? waterTexture
-        : debugMode.field === 'foam'
+        : debugMode.field === 'kelvin'
+          ? kelvinWake.target.texture
+          : debugMode.field === 'foam'
           ? foamSimulation.texture.texture
           : wakeSourceTexture;
       renderer.setRenderTarget(null);
@@ -4752,6 +5093,7 @@ class FloatingSphere {
       renderer.clear();
       debug.draw(renderer, debugTexture, debugMode.mode);
       gpuFrameTimer.end();
+      frameStageTimes.draw = performance.now() - fieldEnd;
       updateDiagnostics(frameCpuStart, simulationSteps);
       renderFrame++;
       window.requestAnimationFrame(animate);
@@ -4759,27 +5101,29 @@ class FloatingSphere {
     }
 
     const qualityPreset = WATER_QUALITY_PRESETS[waterSystemConfig.quality];
-    if (renderFrame % qualityPreset.causticsCadence === 0) {
+    if ((!waterSystemConfig.deepWater || waveCausticsEnabled > 0) && renderFrame % qualityPreset.causticsCadence === 0) {
       caustics.update(renderer, waterTexture, time);
     }
 
     const causticsTexture = caustics.texture.texture;
     updateObjectCausticUniforms(waterTexture, causticsTexture, time);
-    if (renderFrame % qualityPreset.reflectionCadence === 0) {
+    if (reflectionStrength > 0 && renderFrame % qualityPreset.reflectionCadence === 0) {
       updateReflectionTexture();
     }
 
     renderer.setRenderTarget(null);
-    renderer.setClearColor(white, 1);
+    renderer.setClearColor(0x93bacb, 1);
     renderer.clear();
 
-    pool.draw(renderer, waterTexture, causticsTexture, time);
+    renderer.render(skyScene, camera);
+    if (!waterSystemConfig.deepWater) pool.draw(renderer, waterTexture, causticsTexture, time);
     boundaryWalls.draw(renderer);
     floatingSphere.draw(renderer);
-    waterVolume.draw(renderer);
+    if (!waterSystemConfig.deepWater) waterVolume.draw(renderer);
     water.draw(renderer, waterTexture, foamSimulation.texture.texture, causticsTexture, time);
 
     gpuFrameTimer.end();
+    frameStageTimes.draw = performance.now() - fieldEnd;
     updateDiagnostics(frameCpuStart, simulationSteps);
     renderFrame++;
     window.requestAnimationFrame(animate);
@@ -4984,6 +5328,9 @@ class FloatingSphere {
 
   function resetFrameClock() {
     previousFrameTime = null;
+    frameIntervals.length = 0;
+    diagnosticsWindowStart = performance.now();
+    diagnosticsFrameCount = 0;
     previousRenderDispatchTime = null;
     simulationAccumulator = 0;
     sourceMotionAccumulator = 0;
@@ -5064,6 +5411,13 @@ class FloatingSphere {
     applyWireframeMode();
     updateFoamUniforms();
 
+    applyQualityPreset(waterSystemConfig.quality);
+    setSeaState('ocean');
+    setShipMovementMode(shipMovementModeStraight);
+    cameraTarget.x = cargoShip.group.position.x;
+    cameraTarget.z = cargoShip.group.position.z;
+    updateCameraFromOrbit();
+    setControlsOpen(false);
     canvas.addEventListener('mousemove', { handleEvent: onMouseMove });
     canvas.addEventListener('mousedown', { handleEvent: onMouseDown });
     canvas.addEventListener('wheel', { handleEvent: onWheel }, { passive: false });
@@ -5074,6 +5428,7 @@ class FloatingSphere {
     window.addEventListener('focus', onPageFocusChange);
     document.addEventListener('visibilitychange', onPageFocusChange);
 
+    document.body.dataset.ready = 'true';
     animate();
   });
 
