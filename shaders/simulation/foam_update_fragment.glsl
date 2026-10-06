@@ -53,11 +53,12 @@ void main() {
   );
   float flowResponse = 1.0 - exp(-timeStep * 3.2);
   vec2 predictedFlow = mix(previous.ba, surfaceFlow, flowResponse);
-  float sourceFlowSpeed = 0.08 + source.a * 0.24 * turbulenceIntensity;
+  // Foam is left in the water; it does not shoot backwards at vessel speed.
+  float sourceFlowSpeed = 0.015 + source.a * 0.06 * turbulenceIntensity;
   predictedFlow = mix(
     predictedFlow,
     sourceDirection * sourceFlowSpeed,
-    clamp(source.r * (0.52 + source.a * 0.30), 0.0, 0.92)
+    1.0 - exp(-timeStep * source.r * (5.2 + source.a * 3.0))
   );
 
   vec2 backtracedUv = clamp(coord - predictedFlow * timeStep / waterSize, 0.0, 1.0);
@@ -106,7 +107,8 @@ void main() {
   density += (1.0 - density) * sourceDensity * sourceResponse;
   aeration += (1.0 - aeration) * source.r * source.a * turbulenceIntensity * sourceResponse * 0.82;
 
-  vec2 transportedFlow = mix(advected.ba, predictedFlow, flowResponse + source.r * 0.35);
+  vec2 transportedFlow = mix(advected.ba, predictedFlow,
+    1.0 - exp(-timeStep * (3.2 + source.r * 3.5)));
   vec2 curlDirection = vec2(-transportedFlow.y, transportedFlow.x);
   transportedFlow += curlDirection * clamp(vorticity, -0.12, 0.12) * timeStep * 0.65;
   transportedFlow *= exp(-timeStep * (0.52 + diffusion * 0.8));

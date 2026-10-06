@@ -14,26 +14,48 @@ class KelvinWakeField {
     geometry.setIndex([0,1,2, 0,2,3]);
     this.frame = new THREE.InstancedBufferAttribute(new Float32Array(capacity * 4), 4);
     this.wave = new THREE.InstancedBufferAttribute(new Float32Array(capacity * 4), 4);
+    this.heading = new THREE.InstancedBufferAttribute(new Float32Array(capacity * 4), 4);
+    this.shape = new THREE.InstancedBufferAttribute(new Float32Array(capacity * 2), 2);
     this.frame.setUsage(THREE.DynamicDrawUsage);
     this.wave.setUsage(THREE.DynamicDrawUsage);
+    this.heading.setUsage(THREE.DynamicDrawUsage);
+    this.shape.setUsage(THREE.DynamicDrawUsage);
     geometry.setAttribute('packetFrame', this.frame);
     geometry.setAttribute('packetWave', this.wave);
+    geometry.setAttribute('packetHeading', this.heading);
+    geometry.setAttribute('packetShape', this.shape);
     geometry.maxInstancedCount = 0;
     const material = new THREE.RawShaderMaterial({
       uniforms: { waterSize: { value: size } },
       vertexShader: `precision highp float;
         attribute vec3 position; attribute vec4 packetFrame; attribute vec4 packetWave;
-        uniform vec2 waterSize; varying float phaseValue; varying vec2 offset; varying vec4 wave;
-        void main() { offset = position.xy * packetFrame.z * 3.0;
-          wave = packetWave; phaseValue = packetFrame.w;
-          gl_Position = vec4((packetFrame.xy + offset) / waterSize * 2.0, 0.0, 1.0); }`,
+        attribute vec4 packetHeading; attribute vec2 packetShape;
+        uniform vec2 waterSize;
+        varying vec2 local, point; varying vec4 wave, heading; varying vec3 shape;
+        varying float phaseValue;
+        void main() {
+          vec2 n = normalize(packetWave.xy), t = vec2(-n.y, n.x);
+          local = position.xy * vec2(packetFrame.z, packetWave.w) * 3.0;
+          point = packetFrame.xy + n * local.x + t * local.y;
+          wave = packetWave; heading = packetHeading;
+          shape = vec3(packetFrame.z, packetShape); phaseValue = packetFrame.w;
+          gl_Position = vec4(point / waterSize * 2.0, 0.0, 1.0); }`,
       fragmentShader: `precision highp float;
-        varying float phaseValue; varying vec2 offset; varying vec4 wave;
-        void main() { float r2 = dot(offset, offset) / (wave.w * wave.w);
+        varying vec2 local, point; varying vec4 wave, heading; varying vec3 shape;
+        varying float phaseValue;
+        void main() {
+          vec2 q = local / vec2(shape.x, wave.w);
+          float r2 = dot(q, q);
           if (r2 >= 9.0) discard;
-          float envelope = exp(-r2) * clamp(9.0-r2,0.0,1.0);
-          // Frame alpha packs phase, wave alpha packs width. Direction*k in xy.
-          float h = wave.z * envelope * cos(dot(offset, wave.xy) + phaseValue);
+          vec2 delta = heading.xy - point;
+          float behind = dot(delta, heading.zw);
+          float lateral = abs(dot(delta, vec2(-heading.w, heading.z)));
+          float halfWidth = shape.z * .5 + max(0.0, behind) * .35355339059;
+          float causal = smoothstep(0.0, shape.y, behind) *
+            (1.0 - smoothstep(halfWidth, halfWidth + shape.z * .35, lateral));
+          if (causal <= 0.0) discard;
+          float envelope = exp(-r2) * (1.0-smoothstep(6.25,9.0,r2)) * causal;
+          float h = wave.z * envelope * cos(length(wave.xy) * local.x + phaseValue);
           gl_FragColor = vec4(h, 0.0, 0.0, 0.0); }`,
       transparent: true, blending: THREE.CustomBlending,
       blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor, blendEquation: THREE.AddEquation,
@@ -58,12 +80,16 @@ class KelvinWakeField {
       this.packets[keep++] = packet;
       this.active.push(current);
       this.frame.setXYZW(count, current.x, current.z, current.width, current.phase);
-      this.wave.setXYZW(count, current.nx * current.k, current.nz * current.k, current.amplitude, current.width);
+      this.wave.setXYZW(count, current.nx * current.k, current.nz * current.k, current.amplitude, current.crossWidth);
+      this.heading.setXYZW(count, current.headX, current.headZ, current.fx, current.fz);
+      this.shape.setXY(count, current.frontSoftness, current.beam);
       count++;
     }
     this.packets.length = keep;
     this.frame.needsUpdate = true;
     this.wave.needsUpdate = true;
+    this.heading.needsUpdate = true;
+    this.shape.needsUpdate = true;
     this.mesh.geometry.maxInstancedCount = count;
     const previous = renderer.getRenderTarget();
     const color = renderer.getClearColor().clone(), alpha = renderer.getClearAlpha();

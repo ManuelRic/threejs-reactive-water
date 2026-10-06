@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "node scripts/serve.cjs",
     "test": "node --test tests/*.test.cjs",
-    "check": "node --check index.js && node --check water-interaction.js && node --check kelvin-wake.js && node --check kelvin-renderer.js && node --check ocean-grid.js",
+    "check": "node --check index.js && node --check water-interaction.js && node --check kelvin-wake.js && node --check kelvin-renderer.js && node --check wake-foam.js && node --check ocean-grid.js",
     "optimize:cargo": "node scripts/optimize-cargo.mjs && node scripts/build-reflection-lod.mjs"
   },
   "dependencies": {

@@ -8,7 +8,10 @@ persistente. No es un FFT
 Tessendorf ni una simulación CFD tridimensional. El objetivo es un resultado visual
 coherente e interactivo. La escena mide 7 × 7 unidades. Una unidad representa
 40 metros (`waterLab.config.metersPerUnit`): 280 × 280 m. Transformaciones, calados
-y velocidades del API usan unidades de escena; 0,18 unidades/s son 7,2 m/s.
+y velocidades del API usan unidades de escena; el control visible usa nudos (`kn`).
+El valor inicial de 14 kn equivale aproximadamente a 7,2 m/s o 0,18 unidades/s.
+`waterLab.sceneSpeedToKnots` y `waterLab.knotsToSceneSpeed` permiten convertir
+velocidades al integrar modelos externos.
 La gravedad de estela se convierte como `9.81 / metersPerUnit`.
 
 La interacción tiene dos vías:
@@ -30,7 +33,7 @@ Al detener un barco, cesa la emisión direccional; las ondas y espuma existentes
 continúan propagándose y decayendo. Al girar, los paquetes anteriores conservan
 su dirección mundial; no rotan con el barco. Los objetos genéricos inmóviles pueden
 producir reacción de contacto si varía el nivel del agua. Los barcos en reposo
-siguen flotando y ocultando agua bajo su proxy, sin nuevas ondas de navegación;
+siguen flotando, sin nuevas ondas de navegación;
 su difracción del oleaje incidente no está resuelta.
 
 En marcha recta uniforme, los centros de energía quedan dentro de la cuña de
@@ -38,6 +41,15 @@ Kelvin de semiancho ~19,47°. No se aplica una máscara V sobre ondas circulares
 La huella finita suaviza el campo cercano; las ondas subtexel se atenúan sin
 falsear su longitud de onda. Es un modelo lineal de banda finita, no CFD ni una
 solución naval de presión/casco. Fundamento: [ondas de agua, UCSD](https://cseweb.ucsd.edu/~alchern/teaching/cse291_sp25/10-1WaterWave.pdf).
+
+Los paquetes son envolventes alargadas que contienen crestas y valles alternos,
+no bultos gaussianos aislados. Su amplitud se normaliza por el intervalo de
+emisión y el solapamiento; se atenúan las longitudes de onda mucho mayores que
+el casco. La envolvente se abre por dispersión y se desvanece suavemente.
+Un límite causal suave restringe su soporte a la zona posterior de la fuente
+histórica, que continúa en su rumbo original aunque el barco gire. Este recorte
+es una aproximación visual de campo lejano, no una solución exacta de campo cercano.
+La calidad filtra ondas no resueltas sin cambiar la anchura física de los paquetes.
 
 ## Registrar modelos
 
@@ -164,7 +176,11 @@ filtrado anisotrópico. La textura de normales procede de los ejemplos de Three.
 véase `images/textures/THIRD_PARTY.md`.
 
 La espuma usa cobertura irregular y agua aireada bajo la superficie, con una
-fuente de popa más corta y ancha que deja evolucionar la estela anterior. La
+fuente localizada de popa y hélices; pequeñas fuentes de proa representan rotura
+local. No se dibujan brazos blancos continuos de una V. El campo persistente
+construye la estela al avanzar el barco y la transporta con una corriente residual
+débil. `Near wake length` cambia la longitud de estas fuentes, no pinta una banda
+de espuma de varios cascos. La
 cámara `Follow vessel` mantiene el carguero visible y permite seguir orbitando.
 La niebla lejana aproxima la atmósfera marítima. El detalle de normales, las
 nubes y la espuma son modelos visuales: no añaden física de gotas, dispersión
@@ -177,15 +193,29 @@ exclusión de superestructura, parada inmediata, separación barco/objeto,
 convergencia de velocidad a distintas frecuencias y respuesta por normales.
 También verifica dispersión, velocidad de grupo, cuña de Kelvin, parada,
 direcciones históricas, filtrado por casco/resolución, energía direccional y
-presupuesto/límites/materiales/texturas del modelo optimizado.
+presupuesto/límites/materiales/texturas del modelo optimizado. Incluye regresiones
+de crestas/valles, estabilidad al variar la cadencia, fuentes locales de espuma
+y ausencia de espuma de navegación en reposo.
 `npm run check` valida sintaxis JavaScript. Las comprobaciones numéricas no
 certifican exactitud naval ni rendimiento de la GPU.
+
+Con el servidor local abierto, `/tests/wake-gpu.html` compara 20.480 muestras
+de altura CPU/GPU en cinco casos: crucero, lento, rápido, rotado y giro.
+Comprueba también que el campo GPU quede vacío al expirar todos los paquetes.
+Muestra el coste mediano de actualizar y completar el pase de estela aislado a
+256 px, incluida la sincronización CPU/GPU: no equivale a FPS de la escena.
+Para una prueba visual, selecciona `Sheltered harbor`, acerca la cámara y compara
+`Straight`, `S-turn` y `Stopped`; la espuma ya existente debe permanecer en el agua.
+Mide FPS con la pestaña activa: el navegador puede limitar pestañas en segundo
+plano a 1 FPS aunque el tiempo de dibujo sea mucho menor.
 
 Para un puerto completo faltan un dominio a escala real con resolución por zonas,
 profundidades y máscaras costeras, interacción entre oleaje y diques, un espectro
 de olas calibrado, corriente y LOD por distancia para muchos barcos.
-Las máscaras visuales de casco siguen siendo proxies estilizados (hasta ocho);
-no reproducen exactamente cada hueco de una geometría cóncava. Hay un máximo de
+Los proxies de casco (hasta ocho) se usan en la reacción local, pero no recortan
+la superficie visible: el casco opaco la oculta con su profundidad real. Esto
+evita huecos de cielo junto a la línea de flotación al cabecear. Los interiores
+de cascos abiertos requieren una máscara volumétrica más precisa. Hay un máximo de
 16 interactores en esta demo. Al llenarse el presupuesto de paquetes se expiran
 los más antiguos; para muchos barcos conviene repartirlo por distancia.
 

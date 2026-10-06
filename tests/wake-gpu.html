@@ -1,0 +1,79 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Wake GPU regression check</title>
+<style>body{background:#10202c;color:#dcebf4;font:16px monospace;padding:24px}canvas{display:block;margin-top:20px}</style>
+<h1>Wake GPU regression check</h1>
+<pre id="result">Running GPU / CPU comparison...</pre>
+<script src="../node_modules/three/build/three.min.js"></script>
+<script src="../kelvin-wake.js"></script>
+<script src="../kelvin-renderer.js"></script>
+<script>
+(function () {
+  const output = document.getElementById('result');
+  try {
+    const canvas = document.createElement('canvas');
+    const renderer = new THREE.WebGLRenderer({ canvas, context: canvas.getContext('webgl2') });
+    renderer.setSize(400, 400);
+    document.body.appendChild(canvas);
+    const size = 4, resolution = 256;
+    const field = new KelvinWakeField(THREE, new THREE.Vector2(size, size), resolution);
+    const pixels = new Float32Array(resolution * resolution * 4);
+    const results = [];
+    for (const scenario of [
+      { name: 'Cruise', speed: .18, heading: 0 },
+      { name: 'Slow', speed: .07, heading: 0 },
+      { name: 'Fast', speed: .45, heading: 0 },
+      { name: 'Rotated', speed: .18, heading: .93 },
+      { name: 'Turning', speed: .18, heading: 0, turn: .14 },
+    ]) {
+      field.clear();
+      let px = -.8, pz = -.3;
+      for (let t = 0; t < 10; t += .25) {
+        const angle = scenario.heading + t * (scenario.turn || 0);
+        const dx = Math.cos(angle), dz = Math.sin(angle);
+        field.add(KelvinWake.emit({
+          x: px, z: pz, dx, dz, speed: scenario.speed,
+          length: .6, beam: .09, draft: .02, gravity: 9.81 / 40,
+          time: t, dt: .25, isShip: true, minWavelength: .08,
+        }));
+        px += dx * scenario.speed * .25; pz += dz * scenario.speed * .25;
+      }
+      field.update(renderer, 10, 16);
+      renderer.readRenderTargetPixels(field.target, 0, 0, resolution, resolution, pixels);
+      let maxError = 0, maxHeight = 0, count = 0;
+      for (let y = 0; y < resolution; y += 4) for (let x = 0; x < resolution; x += 4) {
+        const cpu = field.sample(((x + .5) / resolution - .5) * size, ((y + .5) / resolution - .5) * size);
+        const gpu = pixels[(y * resolution + x) * 4];
+        if (!Number.isFinite(gpu)) throw new Error('Non-finite GPU wave height');
+        maxError = Math.max(maxError, Math.abs(cpu - gpu));
+        maxHeight = Math.max(maxHeight, Math.abs(gpu)); count++;
+      }
+      if (maxError > .00002 || maxHeight < .000001 || maxHeight > .02) {
+        throw new Error(scenario.name + ': ' + JSON.stringify({ maxError, maxHeight, count }));
+      }
+      results.push(scenario.name + ': ' + count + ' samples, max error ' + maxError.toExponential(3) +
+        ', peak ' + maxHeight.toFixed(6) + ', packets ' + field.active.length);
+    }
+    // Synchronous completion makes this useful even in a background-throttled
+    // browser. This measures the isolated wake pass, NOT full-scene FPS.
+    const timings = [], gl = renderer.getContext();
+    for (let i = 0; i < 16; i++) {
+      gl.finish();
+      const start = performance.now();
+      field.update(renderer, 10, 16);
+      gl.finish();
+      if (i >= 4) timings.push(performance.now() - start);
+    }
+    timings.sort((a, b) => a - b);
+    results.push('Isolated 256px wake update + GPU completion, median: ' +
+      timings[Math.floor(timings.length / 2)].toFixed(2) + ' ms (not full-scene FPS)');
+    // Stopping adds no sources: all historical packets must eventually expire,
+    // including clearing their previous GPU pixels rather than leaving a ghost.
+    field.update(renderer, 27, 16);
+    renderer.readRenderTargetPixels(field.target, 0, 0, resolution, resolution, pixels);
+    if (field.active.length || pixels.some(value => value !== 0)) throw new Error('Stale wake after expiration');
+    output.textContent = 'PASS: 20,480 GPU samples match CPU wave heights\n' +
+      results.join('\n') + '\nStopped: history expires and GPU field is empty';
+  } catch (error) { output.textContent = 'FAIL: ' + error.message; }
+})();
+</script>

@@ -202,6 +202,9 @@ const waterSystemConfig = {
   // g must be converted too, otherwise ship waves fall below one water texel.
   metersPerUnit: 40,
 };
+const knotsPerMetrePerSecond = 1.9438444924406046;
+const sceneSpeedToKnots = speed => speed * waterSystemConfig.metersPerUnit * knotsPerMetrePerSecond;
+const knotsToSceneSpeed = knots => knots / (waterSystemConfig.metersPerUnit * knotsPerMetrePerSecond);
 
 // Lower values make wake waves fade sooner. Higher values let them travel farther.
 let rippleDistance = Number(rippleLengthSlider.value);
@@ -289,7 +292,7 @@ const shipWakeSternOffset = 0.28;
 const shipWakeBeam = 0.18;
 const shipModelYawOffset = 2*Math.PI;
 const shipMovementYawOffset = Math.PI / 2;
-let shipAutopilotSpeed = Number(shipSpeedSlider.value);
+let shipAutopilotSpeed = knotsToSceneSpeed(Number(shipSpeedSlider.value));
 const shipAutopilotTurnBiasMax = 0.45;
 const shipAutopilotTargetRadius = 0.12;
 const shipAutopilotBounds = vesselMovementBounds;
@@ -763,6 +766,9 @@ Promise.all([loadFile('shaders/utils.glsl'), loadFile('shaders/ocean_sky.glsl')]
       contacts: interaction.contactCount,
       samples: interaction.samples.length,
     })),
+    speedUnits: 'kn',
+    sceneSpeedToKnots,
+    knotsToSceneSpeed,
   };
 
   function worldXToWaterUv(value) {
@@ -2121,7 +2127,8 @@ class FloatingSphere {
             maxWakeBeam: this.wakeExtents.beam,
             headingYawOffset: shipMovementYawOffset,
             motorWake: true,
-            propellerPoints: [{ x: -this.wakeExtents.stern * 0.86, y: 0.01, z: 0 }],
+            // This model's forward axis is local -X; the propeller is at +X.
+            propellerPoints: [{ x: this.wakeExtents.stern * 0.86, y: 0.01, z: 0 }],
           });
 
           model.traverse((child) => {
@@ -2818,11 +2825,12 @@ class FloatingSphere {
   });
 
   shipSpeedSlider.addEventListener('input', () => {
-    shipAutopilotSpeed = setControlValue(
+    const knots = setControlValue(
       shipSpeedSlider,
       shipSpeedValue,
       Number(shipSpeedSlider.value)
     );
+    shipAutopilotSpeed = knotsToSceneSpeed(knots);
   });
 
   waveAmplitudeSlider.addEventListener('input', () => {
@@ -3604,14 +3612,19 @@ class FloatingSphere {
         const t = clamp(along / length, 0, 1);
         const width = startWidth + (endWidth - startWidth) * Math.pow(t, 0.72);
         const halfWidth = Math.max(0.004, width * 0.5);
-        const cross = Math.abs(dx * sideX + dz * sideZ) / halfWidth;
+        // Small coherent eddies make the source irregular without flashing
+        // random noise each frame. Old foam lives in the advected texture.
+        const eddyPhase = simulationTime * 2.1 + along / Math.max(maxWidth, .02) * 4.0;
+        const meander = Math.sin(eddyPhase) * halfWidth * .16 * churn;
+        const cross = Math.abs(dx * sideX + dz * sideZ - meander) / halfWidth;
         if (cross >= 1) continue;
 
         const crossFade = 1 - smoothStep(0.30, 1.0, cross);
         const headFade = smoothStep(-headFeather, 0, along);
         const tailFade = 1 - smoothStep(length * 0.72, length + tailFeather, along);
         const edgeFade = getWaterEdgeFade(worldX, worldZ);
-        const value = clamp(intensity * crossFade * headFade * tailFade * edgeFade, 0, 1);
+        const breakup = .72 + .28 * Math.sin(eddyPhase * 1.7 + cross * 7.0);
+        const value = clamp(intensity * crossFade * headFade * tailFade * edgeFade * breakup, 0, 1);
         if (value <= 0.002) continue;
 
         const index = (y * wakeSourceFieldResolution + x) * 4;
@@ -3640,94 +3653,24 @@ class FloatingSphere {
     return objectWaterKelvinAngle * (1 - highSpeedNarrowing * 0.46);
   }
 
-  function addShipWakeFoam(interaction, contacts, slices, directionX, directionZ, sideX, sideZ, speedAmount, turnAmount) {
+  function addShipWakeFoam(interaction, contacts, slices, directionX, directionZ, speedAmount) {
     if (!interaction.isShip || slices.length === 0) return;
-
-    const leading = slices[slices.length - 1];
-    const trailing = slices[0];
-    const trailX = -directionX;
-    const trailZ = -directionZ;
-    const length = contacts.wakeLength || contacts.length;
-    const beam = contacts.wakeBeam || contacts.beam;
-    const wakeAngle = getShipWakeAngle(interaction, length);
-    const foamSpeed = smoothStep(0.12, 0.72, speedAmount) * interaction.strengthScale;
-    if (foamSpeed <= 0.001) return;
-
-    splatShipWakeFoamTrail({
-      x: trailing.x,
-      z: trailing.z,
-      axisX: trailX,
-      axisZ: trailZ,
-      length: Math.max(length * waterSystemConfig.nearWakeLength * 0.48, beam * 1.7),
-      startWidth: Math.max(beam * 0.42, 0.026),
-      endWidth: Math.max(beam * 1.3, 0.070),
-      intensity: foamSpeed * 0.70,
-      churn: 1.0,
-    });
-
+    const propellers = [];
     for (const propellerPoint of interaction.motorWake ? interaction.propellerPoints : []) {
       objectWaterPropellerPosition
         .set(propellerPoint.x, propellerPoint.y, propellerPoint.z)
         .applyMatrix4(interaction.root.matrixWorld);
-      splatShipWakeFoamTrail({
-        x: objectWaterPropellerPosition.x,
-        z: objectWaterPropellerPosition.z,
-        axisX: trailX,
-        axisZ: trailZ,
-        length: Math.max(length * 0.42, beam * 1.8),
-        startWidth: Math.max(beam * 0.18, 0.015),
-        endWidth: Math.max(beam * 0.72, 0.040),
-        intensity: foamSpeed,
-        churn: 1.0,
-      });
+      propellers.push({ x: objectWaterPropellerPosition.x, z: objectWaterPropellerPosition.z });
     }
-
-    for (const sideSign of [-1, 1]) {
-      const sideScale = getTurnSideScale(turnAmount, sideSign, 0.72, 0.24);
-      const shoulderX = trailing.x + sideX * beam * 0.27 * sideSign;
-      const shoulderZ = trailing.z + sideZ * beam * 0.27 * sideSign;
-
-      splatShipWakeFoamTrail({
-        x: shoulderX,
-        z: shoulderZ,
-        axisX: trailX,
-        axisZ: trailZ,
-        length: Math.max(length * (0.58 + Math.max(0, sideScale - 1) * 0.12), beam * 2.2),
-        startWidth: Math.max(beam * 0.075, 0.012),
-        endWidth: Math.max(beam * 0.18, 0.022),
-        intensity: foamSpeed * 0.68 * sideScale,
-        churn: 0.88,
-      });
-
-      const bowSide = getWakeSliceSidePoint(leading, directionX, directionZ, sideX, sideZ, sideSign);
-      if (!bowSide) continue;
-
-      splatShipWakeFoamTrail({
-        x: bowSide.x,
-        z: bowSide.z,
-        axisX: trailX,
-        axisZ: trailZ,
-        length: Math.max(length * 0.30, beam * 1.0),
-        startWidth: Math.max(beam * 0.065, 0.011),
-        endWidth: Math.max(beam * 0.12, 0.017),
-        intensity: foamSpeed * 0.52 * sideScale,
-        churn: 0.70,
-      });
-
-      const cuspX = trailX * Math.cos(wakeAngle) + sideX * Math.sin(wakeAngle) * sideSign;
-      const cuspZ = trailZ * Math.cos(wakeAngle) + sideZ * Math.sin(wakeAngle) * sideSign;
-      splatShipWakeFoamTrail({
-        x: bowSide.x,
-        z: bowSide.z,
-        axisX: cuspX,
-        axisZ: cuspZ,
-        length: Math.max(length * (0.38 + Math.max(0, sideScale - 1) * 0.08), beam * 1.25),
-        startWidth: Math.max(beam * 0.050, 0.010),
-        endWidth: Math.max(beam * 0.15, 0.020),
-        intensity: foamSpeed * 0.30 * sideScale,
-        churn: 0.48,
-      });
-    }
+    for (const source of WakeFoam.sources({
+      isShip: true, speedAmount, strength: interaction.strengthScale,
+      bow: slices[slices.length - 1], stern: slices[0],
+      beam: contacts.wakeBeam || contacts.beam, length: contacts.wakeLength || contacts.length,
+      dx: directionX, dz: directionZ, propellers,
+      nearWakeLength: waterSystemConfig.nearWakeLength,
+      turbulence: waterSystemConfig.sternTurbulence * waterSystemConfig.turbulenceIntensity,
+      propellerWash: waterSystemConfig.propellerWash,
+    })) splatShipWakeFoamTrail(source);
   }
 
   function addMeshWakeFoam(interaction, contacts, slices, directionX, directionZ, speedAmount) {
@@ -4765,10 +4708,7 @@ class FloatingSphere {
       shiftedSlices,
       directionX,
       directionZ,
-      sideX,
-      sideZ,
-      speedAmount,
-      turnAmount
+      speedAmount
     );
 
     addMeshWakeFoam(
@@ -4905,7 +4845,7 @@ class FloatingSphere {
       const directionX = velocityLength > objectWaterMinVelocity ? interaction.velocityX / velocityLength : headingX;
       const directionZ = velocityLength > objectWaterMinVelocity ? interaction.velocityZ / velocityLength : headingZ;
       if (interaction.emittingWake) {
-        const interval = 1 / 6;
+        const interval = 1 / 4;
         const last = interaction.lastKelvinEmitTime;
         const elapsed = last == null ? interval : time - last;
         if (elapsed >= interval) {
@@ -5356,7 +5296,7 @@ class FloatingSphere {
     foamSimulation.clear(renderer);
     setControlValue(buoyancySlider, buoyancyValue, Number(buoyancySlider.value));
     setControlValue(shipBuoyancySlider, shipBuoyancyValue, Number(shipBuoyancySlider.value));
-    setControlValue(shipSpeedSlider, shipSpeedValue, shipAutopilotSpeed);
+    setControlValue(shipSpeedSlider, shipSpeedValue, sceneSpeedToKnots(shipAutopilotSpeed));
     setControlValue(waveAmplitudeSlider, waveAmplitudeValue, oceanWaveStrength);
     setControlValue(waveFrequencySlider, waveFrequencyValue, oceanWaveFrequency);
     setControlValue(waveSpeedSlider, waveSpeedValue, oceanWaveSpeed);

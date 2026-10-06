@@ -30,6 +30,12 @@ npm test
 npm run check
 ```
 
+Para comprobar el shader de estela, abre
+[la prueba GPU local](http://127.0.0.1:8080/tests/wake-gpu.html) con el servidor
+activo. Compara alturas CPU/GPU en cinco trayectorias/velocidades y verifica que
+la estela desaparezca al expirar. El coste del pase aislado no representa los FPS
+de toda la escena.
+
 Consulta [la guía de interacción](water-interaction-guide.md) para registrar
 modelos, configurar el casco y revisar qué simula esta versión.
 

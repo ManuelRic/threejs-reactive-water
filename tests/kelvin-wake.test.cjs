@@ -67,3 +67,48 @@ test('directional field has negligible far-forward or broadside energy', () => {
   assert.ok(front < rear * .001);
   assert.ok(side < rear * .001);
 });
+
+test('resolved packets contain alternating crests and troughs, not a single mound', () => {
+  const emitted = K.emit({ ...base, speed: .18 })[0];
+  const p = { ...K.evolve(emitted, 16, 32), phase: 0 };
+  const wavelength = 2 * Math.PI / p.k;
+  const center = K.height(p, p.x, p.z);
+  assert.ok(center > 0);
+  assert.ok(K.height(p, p.x - wavelength / 2, p.z) < -center * .15);
+  assert.ok(K.height(p, p.x - wavelength, p.z) > center * .015);
+  assert.ok(K.height(p, p.headX + .001, p.headZ) === 0, 'no carrier wave ahead of its source');
+});
+
+test('quality changes resolution filtering, not packet dimensions or wavelength', () => {
+  const packets = [96, 160, 256].map(segments => K.emit({ ...base,
+    speed: .18, minWavelength: 7 / segments * 4 })[0]);
+  for (const p of packets) {
+    assert.equal(p.width, packets[0].width);
+    assert.equal(p.crossWidth, packets[0].crossWidth);
+    assert.equal(p.k, packets[0].k);
+  }
+});
+
+test('time-integrated wake stays stable when source sampling changes', () => {
+  const run = dt => {
+    const packets = [];
+    for (let time = 0; time < 12; time += dt) packets.push(...K.emit({ ...base,
+      speed: .18, time, dt, x: .18 * time }).map(p => K.evolve(p, 12, 16)));
+    return Array.from({ length: 160 }, (_, i) => {
+      const x = .3 + (i % 40) * .04, z = Math.floor(i / 40) * .08;
+      return packets.reduce((sum, p) => sum + K.height(p, x, z), 0);
+    });
+  };
+  const a = run(.25), b = run(.125);
+  const energy = b.reduce((sum, h) => sum + h * h, 0);
+  const error = a.reduce((sum, h, i) => sum + (h - b[i]) ** 2, 0);
+  assert.ok(Math.sqrt(error / energy) < .08);
+  assert.ok(Math.max(...a.map(Math.abs)) < base.draft, 'no accumulated water wall');
+});
+
+test('dry hulls and invalid gravity do not generate navigation waves', () => {
+  for (const override of [{ draft: 0 }, { draft: -1 }, { gravity: -1 }, { strength: Infinity },
+    { bowStrength: NaN }, { sternStrength: Infinity }]) {
+    assert.deepEqual(K.emit({ ...base, ...override }), []);
+  }
+});

@@ -14,6 +14,7 @@
     <script src="water-interaction.js"></script>
     <script src="kelvin-wake.js"></script>
     <script src="kelvin-renderer.js"></script>
+    <script src="wake-foam.js"></script>
     <script src="ocean-grid.js"></script>
   </head>
 
@@ -104,8 +105,8 @@
               <input id="ship-buoyancy" class="slider is-fullwidth" type="range" min="0" max="2" step="0.01" value="1">
             </div>
             <div class="range-control">
-              <label for="ship-speed"><span>Ship speed (scene units/s; 1 unit = 40 m)</span><input id="ship-speed-value" class="value-input" type="number" min="0" max="1.5" step="0.01" value="0.18"></label>
-              <input id="ship-speed" class="slider is-fullwidth" type="range" min="0" max="1.5" step="0.01" value="0.18">
+              <label for="ship-speed"><span>Ship speed (kn)</span><input id="ship-speed-value" class="value-input" type="number" min="0" max="40" step="0.1" value="14.0"></label>
+              <input id="ship-speed" class="slider is-fullwidth" type="range" min="0" max="40" step="0.1" value="14.0">
             </div>
           </div>
         </div>

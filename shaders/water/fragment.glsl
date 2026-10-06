@@ -74,34 +74,10 @@ float waterBounceMask(vec2 uv) {
     blocked = max(blocked, inside);
   }
 
-  vec2 worldPoint = (uv - 0.5) * waterSize;
-  for (int i = 0; i < 8; i++) {
-    if (float(i) >= waterHullMaskCount) {
-      break;
-    }
-
-    vec4 hull = waterHullMaskValues[i];
-    vec4 size = waterHullMaskSizes[i];
-    vec2 forward = normalize(hull.zw);
-    vec2 sideAxis = vec2(-forward.y, forward.x);
-    vec2 deltaPoint = worldPoint - hull.xy;
-    float along = dot(deltaPoint, forward);
-    float side = abs(dot(deltaPoint, sideAxis));
-    float bow = max(size.x, 0.001);
-    float stern = max(size.y, 0.001);
-    float halfBeam = max(size.z, 0.001);
-    float softness = max(size.w, 0.001);
-    float t = clamp((along + stern) / (bow + stern), 0.0, 1.0);
-    float sternRound = smoothstep(0.0, 0.12, t);
-    float bowTaper = 1.0 - smoothstep(0.38, 1.0, t) * 0.985;
-    float beamProfile = sternRound * bowTaper;
-    float localHalfBeam = halfBeam * beamProfile;
-    float alongMask = smoothstep(-stern - softness, -stern + softness, along) *
-      (1.0 - smoothstep(bow - softness, bow + softness, along));
-    float sideMask = 1.0 - smoothstep(localHalfBeam - softness, localHalfBeam + softness, side);
-
-    blocked = max(blocked, alongMask * sideMask);
-  }
+  // The approximate 2D hull mask belongs to the reaction solver only. Cutting
+  // this displaced surface with it exposed sky-coloured holes beside the hull,
+  // which looked like a solid white wake. Opaque hull geometry already occludes
+  // water via the depth buffer, including its actual pitch, roll and waterline.
 
   return blocked;
 }
@@ -277,7 +253,7 @@ void main() {
       reflectionUV.x > 0.0 && reflectionUV.y > 0.0 &&
       reflectionUV.x < 1.0 && reflectionUV.y < 1.0) {
     vec4 objectReflection = texture2D(reflectionTexture, reflectionUV);
-    reflection = mix(reflection, objectReflection.rgb, objectReflection.a * reflectionStrength);
+    reflection = mix(reflection, objectReflection.rgb, clamp(objectReflection.a * reflectionStrength, 0.0, 1.0));
   }
   vec3 color = mix(transmitted, reflection, fresnel);
   // Unresolved short waves become roughness rather than flickering pixels.
