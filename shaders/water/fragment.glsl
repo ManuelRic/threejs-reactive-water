@@ -12,6 +12,16 @@ uniform float kelvinTexel;
 uniform sampler2D foamImageTexture;
 uniform sampler2D shipWakeFoamTexture;
 uniform sampler2D reflectionTexture;
+uniform sampler2D reflectionDepthTexture;
+uniform float reflectionDepthAvailable;
+uniform mat4 reflectionInverseViewProjection;
+uniform sampler2D submergedTexture;
+uniform sampler2D submergedDepthTexture;
+uniform float submergedDepthAvailable;
+uniform mat4 submergedInverseViewProjection;
+uniform vec2 viewportSize;
+uniform float cameraNear;
+uniform float cameraFar;
 uniform float time;
 uniform float oceanWaveStrength;
 uniform float oceanWaveFrequency;
@@ -190,6 +200,16 @@ float sunGlitter(vec3 n, vec3 v, vec3 l, float roughness) {
   return distribution * visibility * fresnel * nl;
 }
 
+float viewDistanceFromDepth(float depth) {
+  return cameraNear * cameraFar /
+    max(cameraFar - depth * (cameraFar - cameraNear), 0.0001);
+}
+
+vec3 worldPositionFromDepth(vec2 uv, float depth, mat4 inverseViewProjection) {
+  vec4 point = inverseViewProjection * vec4(uv * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
+  return point.xyz / point.w;
+}
+
 void main() {
   vec2 point = (waterUv - .5) * waterSize;
   float inDomain = step(0.0, waterUv.x) * step(waterUv.x, 1.0) *
@@ -272,6 +292,33 @@ void main() {
     transmitted = transmitted * absorption + waterBodyColor * (1.0-absorption);
   }
 
+  // The underwater pass contains only geometry below the waterline. Its depth
+  // prevents an object behind the surface from showing through nearer water.
+  if (deepWater > .5 && underwater < .5 && inDomain > .5) {
+    vec2 submergedUv = gl_FragCoord.xy / viewportSize + normal.xz * .004;
+    if (submergedUv.x > 0.0 && submergedUv.y > 0.0 &&
+        submergedUv.x < 1.0 && submergedUv.y < 1.0) {
+      vec4 submerged = texture2D(submergedTexture, submergedUv);
+      if (submerged.a > .001) {
+        float pathLength = .025;
+        float depthGate = 1.0;
+        if (submergedDepthAvailable > .5) {
+          float objectDepth = texture2D(submergedDepthTexture, submergedUv).r;
+          pathLength = viewDistanceFromDepth(objectDepth) -
+            viewDistanceFromDepth(gl_FragCoord.z);
+          float objectHeight = worldPositionFromDepth(submergedUv, objectDepth,
+            submergedInverseViewProjection).y;
+          depthGate = smoothstep(0.0, .035, pathLength) *
+            (1.0 - smoothstep(-.015, .015, objectHeight - pos.y));
+        }
+        float visibility = submerged.a * depthGate * exp(-max(pathLength, 0.0) * 4.0);
+        vec3 submergedColor = mix(submerged.rgb, waterBodyColor,
+          1.0 - exp(-max(pathLength, 0.0) * 2.0));
+        transmitted = mix(transmitted, submergedColor, visibility);
+      }
+    }
+  }
+
   // Projected object reflection is composited in linear light.
   vec2 reflectionUV = reflectionCoord.xy / reflectionCoord.w +
     normal.xz * .018 + info.ba * .03;
@@ -279,7 +326,15 @@ void main() {
       reflectionUV.x > 0.0 && reflectionUV.y > 0.0 &&
       reflectionUV.x < 1.0 && reflectionUV.y < 1.0) {
     vec4 objectReflection = texture2D(reflectionTexture, reflectionUV);
-    reflection = mix(reflection, objectReflection.rgb, clamp(objectReflection.a * reflectionStrength, 0.0, 1.0));
+    float reflectionCoverage = objectReflection.a;
+    if (reflectionDepthAvailable > .5 && reflectionCoverage > .001) {
+      float objectDepth = texture2D(reflectionDepthTexture, reflectionUV).r;
+      float objectHeight = worldPositionFromDepth(reflectionUV, objectDepth,
+        reflectionInverseViewProjection).y;
+      reflectionCoverage *= smoothstep(-.015, .015, objectHeight - pos.y);
+    }
+    reflection = mix(reflection, objectReflection.rgb,
+      clamp(reflectionCoverage * reflectionStrength, 0.0, 1.0));
   }
   vec3 color = mix(transmitted, reflection, fresnel);
   // Unresolved short waves become roughness rather than flickering pixels.

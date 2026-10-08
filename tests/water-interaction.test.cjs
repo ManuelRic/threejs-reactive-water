@@ -83,7 +83,7 @@ test('yaw/heave and numerical jitter cannot trigger a navigation wake', () => {
   assert.equal(advanceMotion(state, 0.0002, -0.0003, 1 / 60, { isShip: true }).shipWakeActive, false);
 });
 
-test('generic objects move/displace water without getting a ship wake', () => {
+test('generic objects can move without activating a ship wake', () => {
   const motion = advanceMotion({}, 0.4, 0, 1 / 60, { isShip: false });
   assert.equal(motion.moving, true);
   assert.equal(motion.shipWakeActive, false);

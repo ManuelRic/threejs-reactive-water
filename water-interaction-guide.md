@@ -3,8 +3,9 @@
 ## Lo que hace esta versión
 
 El laboratorio combina el océano procedural existente, paquetes direccionales
-dispersivos para barcos, un campo GPU local para objetos genéricos y espuma
-persistente. No es un FFT
+dispersivos para barcos y espuma persistente. El solver radial queda reservado
+para el generador de olas explícito; ningún objeto de la escena lo alimenta.
+No es un FFT
 Tessendorf ni una simulación CFD tridimensional. El objetivo es un resultado visual
 coherente e interactivo. La escena mide 7 × 7 unidades. Una unidad representa
 40 metros (`waterLab.config.metersPerUnit`): 280 × 280 m. Transformaciones, calados
@@ -16,11 +17,10 @@ La gravedad de estela se convierte como `9.81 / metersPerUnit`.
 
 La interacción tiene dos vías:
 
-- **Contacto de objetos genéricos:** muestras de las caras de la malla, ponderadas
-  por área en el espacio mundial; normales, inmersión y cambios de nivel del agua
-  producen pequeños impulsos locales. Incluye balanceo y rotación sin exigir
-  traslación. Esto aproxima la reacción del agua al contacto, no resuelve la
-  difracción hidrodinámica completa del oleaje incidente.
+- **Objetos genéricos:** esfera y cubo siguen flotando y cruzando la superficie,
+  pero no emiten anillos ni estelas de navegación. Su difracción y estela
+  hidrodinámica todavía no están modeladas; omitirlas evita presentar círculos
+  propagados como si fueran una respuesta física del casco.
 - **Barcos:** la huella mojada determina longitud, manga y origen de proa/popa.
   La estela emplea un espectro direccional finito con dispersión de aguas profundas:
   `omega² = g*k`, `omega/k = U*cos(theta)`, velocidad de grupo igual a la mitad de
@@ -36,8 +36,7 @@ La interacción tiene dos vías:
 
 Al detener un barco, cesa la emisión direccional; las ondas y espuma existentes
 continúan propagándose y decayendo. Al girar, los paquetes anteriores conservan
-su dirección mundial; no rotan con el barco. Los objetos genéricos inmóviles pueden
-producir reacción de contacto si varía el nivel del agua. Los barcos en reposo
+su dirección mundial; no rotan con el barco. Los barcos en reposo
 siguen flotando, sin nuevas ondas de navegación;
 su difracción del oleaje incidente no está resuelta.
 
@@ -92,7 +91,7 @@ const handle = waterLab.registerWaterInteractor({
 
 Los puntos de hélice son locales a `object`. Para objetos genéricos usa
 `objectType: 'object'`, `'sphere'` o `'cube'`; también se reconoce la etiqueta
-`ship`. Un objeto genérico no recibe la estela central de hélice de un barco.
+`ship`. Un objeto genérico no recibe la estela de un barco ni genera anillos.
 `motorWake: false` desactiva los emisores de hélice; el casco sigue desplazando agua
 cuando se mueve. Los perfiles de barco comparten el modelo de estela existente;
 no implementan todavía fuerzas específicas de planeo.

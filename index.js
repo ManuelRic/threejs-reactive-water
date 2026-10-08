@@ -436,6 +436,9 @@ Promise.all([loadFile('shaders/utils.glsl'), loadFile('shaders/ocean_sky.glsl')]
     const renderWidth = Math.floor(displayWidth * pixelRatio);
     const renderHeight = Math.floor(displayHeight * pixelRatio);
 
+    resizeSubmergedTarget();
+    if (water.material) water.material.uniforms['viewportSize'].value.set(renderWidth, renderHeight);
+
     if (canvas.width === renderWidth && canvas.height === renderHeight) return;
 
     renderer.setPixelRatio(pixelRatio);
@@ -452,7 +455,34 @@ Promise.all([loadFile('shaders/utils.glsl'), loadFile('shaders/ocean_sky.glsl')]
     magFilter: THREE.LinearFilter,
     format: THREE.RGBAFormat,
   });
+  const depthTexturesAvailable = isWebGL2 || Boolean(gl.getExtension('WEBGL_depth_texture'));
+  if (depthTexturesAvailable) {
+    reflectionTarget.depthTexture = new THREE.DepthTexture(1024, 1024);
+    reflectionTarget.depthTexture.type = THREE.UnsignedIntType;
+  }
+  const submergedTarget = new THREE.WebGLRenderTarget(512, 512, {
+    minFilter: THREE.LinearFilter,
+    magFilter: THREE.LinearFilter,
+    format: THREE.RGBAFormat,
+  });
+  if (depthTexturesAvailable) {
+    submergedTarget.depthTexture = new THREE.DepthTexture(512, 512);
+    submergedTarget.depthTexture.type = THREE.UnsignedIntType;
+  }
+  function resizeSubmergedTarget() {
+    const limit = WATER_QUALITY_PRESETS[waterSystemConfig.quality].reflectionResolution;
+    const displayWidth = Math.max(1, canvas.clientWidth);
+    const displayHeight = Math.max(1, canvas.clientHeight);
+    const scale = Math.min(1, limit / Math.max(displayWidth, displayHeight));
+    submergedTarget.setSize(Math.max(1, Math.round(displayWidth * scale)),
+      Math.max(1, Math.round(displayHeight * scale)));
+  }
+  const aboveWaterClip = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+  const belowWaterClip = new THREE.Plane(new THREE.Vector3(0, -1, 0), 0);
   const reflectionTextureMatrix = new THREE.Matrix4();
+  const reflectionInverseViewProjection = new THREE.Matrix4();
+  const submergedInverseViewProjection = new THREE.Matrix4();
+  const viewProjection = new THREE.Matrix4();
   const reflectionViewPosition = new THREE.Vector3();
   const reflectionViewDirection = new THREE.Vector3();
   const reflectionTargetPoint = new THREE.Vector3();
@@ -517,8 +547,6 @@ Promise.all([loadFile('shaders/utils.glsl'), loadFile('shaders/ocean_sky.glsl')]
   const objectWaterPosition = new THREE.Vector3();
   const objectWaterPreviousPosition = new THREE.Vector3();
   const objectWaterPropellerPosition = new THREE.Vector3();
-  const objectWaterNormal = new THREE.Vector3();
-  const objectWaterNormalMatrix = new THREE.Matrix3();
   const objectWaterQuaternion = new THREE.Quaternion();
   const objectWaterHeading = new THREE.Vector3();
   const objectWaterSamples = [];
@@ -1496,7 +1524,17 @@ Promise.all([loadFile('shaders/utils.glsl'), loadFile('shaders/ocean_sky.glsl')]
               causticTex: { value: null },
               poolHalfSize: { value: waterHalfSize },
               reflectionTexture: { value: reflectionTarget.texture },
+              reflectionDepthTexture: { value: reflectionTarget.depthTexture },
+              reflectionDepthAvailable: { value: depthTexturesAvailable ? 1 : 0 },
+              reflectionInverseViewProjection: { value: reflectionInverseViewProjection },
               reflectionTextureMatrix: { value: reflectionTextureMatrix },
+              submergedTexture: { value: submergedTarget.texture },
+              submergedDepthTexture: { value: submergedTarget.depthTexture },
+              submergedDepthAvailable: { value: depthTexturesAvailable ? 1 : 0 },
+              submergedInverseViewProjection: { value: submergedInverseViewProjection },
+              viewportSize: { value: new THREE.Vector2(canvas.width, canvas.height) },
+              cameraNear: { value: camera.near },
+              cameraFar: { value: camera.far },
               reflectionStrength: { value: reflectionStrength },
               waterOpacity: { value: waterOpacity },
               deepWater: { value: waterSystemConfig.deepWater ? 1 : 0 },
@@ -1615,14 +1653,13 @@ Promise.all([loadFile('shaders/utils.glsl'), loadFile('shaders/ocean_sky.glsl')]
     reflectionCamera.lookAt(reflectionTargetPoint);
     reflectionCamera.updateMatrixWorld();
     reflectionCamera.projectionMatrix.copy(camera.projectionMatrix);
+    reflectionInverseViewProjection.getInverse(viewProjection.multiplyMatrices(
+      reflectionCamera.projectionMatrix, reflectionCamera.matrixWorldInverse));
 
     reflectionTextureMatrix.copy(reflectionTextureTransform);
     reflectionTextureMatrix.multiply(reflectionCamera.projectionMatrix);
     reflectionTextureMatrix.multiply(reflectionCamera.matrixWorldInverse);
 
-    renderer.setRenderTarget(reflectionTarget);
-    renderer.setClearColor(black, 0);
-    renderer.clear();
     // Reflections reuse textures with lit Lambert materials and index-only LOD,
     // without repeating full PBR/caustics or the high-detail vessel geometry.
     const originals = [];
@@ -1633,10 +1670,50 @@ Promise.all([loadFile('shaders/utils.glsl'), loadFile('shaders/ocean_sky.glsl')]
       if (object.userData.reflectionGeometry) object.geometry = object.userData.reflectionGeometry;
     });
     const previousToneMapping = renderer.toneMapping;
+    const previousClippingPlanes = renderer.clippingPlanes;
     renderer.toneMapping = THREE.NoToneMapping;
-    try { renderer.render(objectScene, reflectionCamera); }
+    aboveWaterClip.constant = depthTexturesAvailable ? Math.max(.12, oceanWaveStrength * 2.8) : 0;
+    renderer.clippingPlanes = [aboveWaterClip];
+    try {
+      renderer.setRenderTarget(reflectionTarget);
+      renderer.setClearColor(black, 0);
+      renderer.clear();
+      renderer.render(objectScene, reflectionCamera);
+    }
     finally {
       renderer.toneMapping = previousToneMapping;
+      renderer.clippingPlanes = previousClippingPlanes;
+      for (const [object, material, geometry] of originals) {
+        object.material = material;
+        object.geometry = geometry;
+      }
+    }
+  }
+
+  function updateSubmergedTexture() {
+    camera.updateMatrixWorld();
+    submergedInverseViewProjection.getInverse(viewProjection.multiplyMatrices(
+      camera.projectionMatrix, camera.matrixWorldInverse));
+    const originals = [];
+    objectScene.traverse(object => {
+      if (!object.isMesh || !isVisibleInHierarchy(object)) return;
+      originals.push([object, object.material, object.geometry]);
+      object.material = getReflectionMaterial(object.material);
+      if (object.userData.reflectionGeometry) object.geometry = object.userData.reflectionGeometry;
+    });
+    const previousToneMapping = renderer.toneMapping;
+    const previousClippingPlanes = renderer.clippingPlanes;
+    renderer.toneMapping = THREE.NoToneMapping;
+    belowWaterClip.constant = depthTexturesAvailable ? Math.max(.12, oceanWaveStrength * 2.8) : 0;
+    renderer.clippingPlanes = [belowWaterClip];
+    try {
+      renderer.setRenderTarget(submergedTarget);
+      renderer.setClearColor(black, 0);
+      renderer.clear();
+      renderer.render(objectScene, camera);
+    } finally {
+      renderer.toneMapping = previousToneMapping;
+      renderer.clippingPlanes = previousClippingPlanes;
       for (const [object, material, geometry] of originals) {
         object.material = material;
         object.geometry = geometry;
@@ -2497,7 +2574,6 @@ class FloatingSphere {
     interaction.lastKelvinEmitTime = null;
     for (const sample of interaction.samples) {
       sample.previousWorld.copy(sample.position).applyMatrix4(sample.mesh.matrixWorld);
-      sample.previousDepth = null;
     }
   }
 
@@ -2527,6 +2603,7 @@ class FloatingSphere {
     water.setRenderSegments(preset.renderSegments);
     foamSimulation.setResolution(renderer, preset.foamResolution);
     reflectionTarget.setSize(preset.reflectionResolution, preset.reflectionResolution);
+    resizeSubmergedTarget();
     caustics.setResolution(preset.causticsResolution);
     fftWavesEnabled = preset.spectralOcean ? 1 : 0;
 
@@ -3113,6 +3190,10 @@ class FloatingSphere {
   toggleWaveGeneratorButton.addEventListener('click', () => {
     waveGeneratorEnabled = !waveGeneratorEnabled;
     resetWaveEmitters();
+    if (!waveGeneratorEnabled) {
+      waterSimulation.clear(renderer);
+      localReactionActiveUntil = 0;
+    }
     setToggleButtonState(toggleWaveGeneratorButton, waveGeneratorEnabled);
   });
 
@@ -3770,26 +3851,17 @@ class FloatingSphere {
 
   function updateGeometryContact(interaction, dt, time) {
     const contacts = [];
-    let previousMesh = null;
-    const cellSize = Math.max(waterWidth, waterLength) / objectPressureFieldResolution;
     interaction.root.updateWorldMatrix(true, true);
     for (const sample of interaction.samples) {
       const mesh = sample.mesh;
       if (!isVisibleInHierarchy(mesh)) {
-        sample.previousDepth = null;
         sample.previousWorld.copy(sample.position).applyMatrix4(mesh.matrixWorld);
         continue;
       }
       objectWaterVertex.copy(sample.position).applyMatrix4(mesh.matrixWorld);
-      const velocity = {
-        x: (objectWaterVertex.x - sample.previousWorld.x) / dt,
-        z: (objectWaterVertex.z - sample.previousWorld.z) / dt,
-      };
       sample.previousWorld.copy(objectWaterVertex);
       const waterHeight = getOceanHeightAt(objectWaterVertex.x, objectWaterVertex.z, time);
       const depth = waterHeight - objectWaterVertex.y;
-      const previousDepth = sample.previousDepth;
-      sample.previousDepth = depth;
       if (Math.abs(objectWaterVertex.x) > waterHalfWidth || Math.abs(objectWaterVertex.z) > waterHalfLength) continue;
       const maxDepth = Math.max(objectWaterMaxDepth, interaction.draft * 2.5);
       if (depth < -0.008 || depth > maxDepth) continue;
@@ -3797,33 +3869,6 @@ class FloatingSphere {
         x: objectWaterVertex.x,
         z: objectWaterVertex.z,
         immersion: smoothStep(-0.008, Math.max(0.008, interaction.draft), depth),
-      });
-      // Ship contacts feed the directional model, not the radial pool solver.
-      // Avoid normal transforms and impact calculations whose result is unused.
-      if (interaction.isShip) continue;
-      if (mesh !== previousMesh) {
-        objectWaterNormalMatrix.getNormalMatrix(mesh.matrixWorld);
-        previousMesh = mesh;
-      }
-      objectWaterNormal.copy(sample.normal).applyMatrix3(objectWaterNormalMatrix).normalize();
-      const response = WaterInteraction.contactResponse(objectWaterNormal, velocity, depth,
-        previousDepth, dt, interaction.draft, interaction.contactStrength);
-      if (!response) continue;
-      const normalLength = Math.hypot(objectWaterNormal.x, objectWaterNormal.z);
-      // Each splat represents surface area, so tessellation/sample budget does
-      // not multiply the force. Large faces cover multiple water cells.
-      const radius = Math.max(cellSize * 0.8, Math.sqrt(sample.area) * 0.7);
-      const areaWeight = Math.min(1, sample.area / (radius * radius * Math.PI));
-      splatObjectPressure({
-        x: objectWaterVertex.x,
-        z: objectWaterVertex.z,
-        axisX: normalLength > 0.001 ? objectWaterNormal.x / normalLength : 1,
-        axisZ: normalLength > 0.001 ? objectWaterNormal.z / normalLength : 0,
-        halfLength: radius,
-        halfWidth: radius,
-        target: response.target * areaWeight,
-        impulse: response.impulse * areaWeight,
-        turbulence: response.turbulence,
       });
     }
     interaction.contactPoints = contacts;
@@ -4573,17 +4618,16 @@ class FloatingSphere {
       : 1 - turnMagnitude * insideDamp;
   }
 
-  function writeObjectWaterInteraction(
+  function writeShipWaterInteraction(
     interaction,
     directionX,
     directionZ,
     speedAmount = 1,
     turnAmount = 0,
-    time = simulationTime,
     offsetX = 0,
-    offsetZ = 0,
-    recordHistory = true
+    offsetZ = 0
   ) {
+    if (!interaction.isShip) return;
     const sideX = -directionZ;
     const sideZ = directionX;
     const contacts = collectObjectWaterContacts(interaction, directionX, directionZ, sideX, sideZ);
@@ -4603,21 +4647,6 @@ class FloatingSphere {
       isHullWake ? 22 : 9
     );
     const shiftedSlices = offsetWakeSlices(slices, offsetX, offsetZ, directionX, directionZ, sideX, sideZ);
-    const bow = getWakeBowFromSlices(shiftedSlices);
-    const bowLeft = getWakeSliceSidePoint(bow, directionX, directionZ, sideX, sideZ, -1);
-    const bowRight = getWakeSliceSidePoint(bow, directionX, directionZ, sideX, sideZ, 1);
-
-    if (!interaction.isShip) addContinuousHullPressure(
-      interaction,
-      contacts,
-      shiftedSlices,
-      directionX,
-      directionZ,
-      sideX,
-      sideZ,
-      speedAmount,
-      turnAmount
-    );
 
     addShipWakeFoam(
       interaction,
@@ -4627,48 +4656,6 @@ class FloatingSphere {
       directionZ,
       speedAmount,
       turnAmount
-    );
-
-    addMeshWakeFoam(
-      interaction,
-      contacts,
-      shiftedSlices,
-      directionX,
-      directionZ,
-      speedAmount
-    );
-
-    if (!recordHistory || interaction.isShip) return;
-
-    addWakeHistoryPoint(
-      interaction,
-      bowLeft,
-      directionX,
-      directionZ,
-      sideX,
-      sideZ,
-      dimensions.length,
-      dimensions.beam,
-      speedAmount,
-      turnAmount,
-      time,
-      wakeEmitterBowLeft,
-      -1
-    );
-    addWakeHistoryPoint(
-      interaction,
-      bowRight,
-      directionX,
-      directionZ,
-      sideX,
-      sideZ,
-      dimensions.length,
-      dimensions.beam,
-      speedAmount,
-      turnAmount,
-      time,
-      wakeEmitterBowRight,
-      1
     );
   }
 
@@ -4741,24 +4728,24 @@ class FloatingSphere {
       const headingSideZ = headingX;
       interaction.lateralVelocity = interaction.velocityX * headingSideX + interaction.velocityZ * headingSideZ;
       const effectiveVelocity = velocityLength;
-      // Geometry-local reaction is evaluated even at rest, while directional
-      // sources require current translational motion. Rotation alone cannot
-      // turn a moored ship's bow/stern into navigation-wake emitters.
+      // Contact samples define the ship's hull footprint. The radial solver is
+      // reserved for the explicit wave generator, never for scene objects.
       updateGeometryContact(interaction, dt, time);
+
+      if (!interaction.isShip) {
+        interaction.wakeHistory.length = 0;
+        interaction.lastWakeHistoryByType = {};
+        continue;
+      }
 
       if (!motion.moving) {
         interaction.lastKelvinEmitTime = null;
         interaction.hasWakeDirection = false;
         interaction.wakeTurnAmount *= 0.85;
-        if (!interaction.isShip) renderWakeHistory(interaction, time);
         continue;
       }
 
       const speedAmount = motion.speedAmount;
-      if (!interaction.isShip && speedAmount <= 0.001) {
-        if (!interaction.isShip) renderWakeHistory(interaction, time);
-        continue;
-      }
       interaction.emittingWake = motion.shipWakeActive && interaction.contactCount > 1;
 
       const directionX = velocityLength > objectWaterMinVelocity ? interaction.velocityX / velocityLength : headingX;
@@ -4824,28 +4811,20 @@ class FloatingSphere {
         const blend = sampleIndex / sweepSamples;
         const sampleX = objectWaterPreviousPosition.x + frameMoveX * blend;
         const sampleZ = objectWaterPreviousPosition.z + frameMoveZ * blend;
-        const sampleTime = time - dt * (1 - blend);
-
-        writeObjectWaterInteraction(
+        writeShipWaterInteraction(
           interaction,
           directionX,
           directionZ,
           speedAmount,
           turnAmount,
-          sampleTime,
           sampleX - objectWaterPosition.x,
-          sampleZ - objectWaterPosition.z,
-          true
+          sampleZ - objectWaterPosition.z
         );
       }
-      if (!interaction.isShip) renderWakeHistory(interaction, time);
     }
 
     updateWaveEmitters(time);
-    if (waveGeneratorEnabled || objectWaterInteractions.some(interaction =>
-      !interaction.isShip && interaction.contactCount > 0 && isVisibleInHierarchy(interaction.root))) {
-      localReactionActiveUntil = time + 8;
-    }
+    if (waveGeneratorEnabled) localReactionActiveUntil = time + 8;
     kelvinWake.setHulls(hullSources, dt);
     finalizeObjectPressureField();
     objectPressureTexture.needsUpdate = true;
@@ -4970,6 +4949,8 @@ class FloatingSphere {
     if (reflectionStrength > 0 && renderFrame % qualityPreset.reflectionCadence === 0) {
       updateReflectionTexture();
     }
+    if (waterSystemConfig.deepWater && camera.position.y >= 0 &&
+        renderFrame % qualityPreset.reflectionCadence === 0) updateSubmergedTexture();
 
     renderer.setRenderTarget(null);
     renderer.setClearColor(0x93bacb, 1);
