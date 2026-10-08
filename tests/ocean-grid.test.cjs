@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const THREE = require('three');
 const createOceanGeometry = require('../ocean-grid.js');
 
-for (const segments of [96, 160, 256]) {
+for (const segments of [96, 192, 256]) {
   test(`ocean mesh ${segments}: stitched, consistently wound and horizon-sized`, () => {
     const geometry = createOceanGeometry(THREE, 7, segments, true);
     const positions = geometry.attributes.position.array;

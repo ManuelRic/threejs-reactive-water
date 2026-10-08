@@ -4,7 +4,10 @@ La versión local añade agua profunda, cielo y reflejos compartidos, estados de
 contacto según las caras de la geometría y estelas solo durante la traslación de
 barcos. La espuma ya emitida continúa evolucionando cuando se detiene el barco.
 Las ondas de navegación usan paquetes dispersivos direccionales en vez de
-impulsos circulares. La malla de agua depende de la calidad, el modelo de cargo
+impulsos circulares. Una onda de desplazamiento junto a la proa mantiene la reacción
+del agua a 1–4 kn, con muy poca espuma; la espuma de popa se transporta y disipa.
+El carguero sigue el oleaje con cabeceo, balanceo y elevación amortiguados a partir
+de 15 muestras del agua. La malla de agua depende de la calidad, el modelo de cargo
 está optimizado y la resolución de pantalla se adapta al tiempo GPU.
 
 El render usa un horizonte continuo con LOD, reflejos de cielo y sol en color
@@ -32,9 +35,11 @@ npm run check
 
 Para comprobar el shader de estela, abre
 [la prueba GPU local](http://127.0.0.1:8080/tests/wake-gpu.html) con el servidor
-activo. Compara alturas CPU/GPU en cinco trayectorias/velocidades y verifica que
-la estela desaparezca al expirar. El coste del pase aislado no representa los FPS
-de toda la escena.
+activo. Compara alturas CPU/GPU en ocho casos, incluidas proas a 1 y 3 kn, y verifica
+espuma en crestas laterales, cancelación de ondas, persistencia al parar y estabilidad
+a 30/60/120 Hz. La [prueba de oleaje y flotación](http://127.0.0.1:8080/tests/ocean-gpu.html)
+compara el muestreo CPU con las funciones de desplazamiento reales del shader.
+El coste del pase aislado no representa los FPS de toda la escena.
 
 Consulta [la guía de interacción](water-interaction-guide.md) para registrar
 modelos, configurar el casco y revisar qué simula esta versión.

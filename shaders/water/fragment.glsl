@@ -117,6 +117,25 @@ float noise(vec2 p) {
   return mix(mix(hash(i), hash(i + vec2(1, 0)), f.x),
     mix(hash(i + vec2(0, 1)), hash(i + 1.0), f.x), f.y);
 }
+float foamFilm(vec2 p, float pixelWidth) {
+  // The filter below converges to this average for subpixel bubbles. Skip
+  // the nine-cell search entirely once no film detail can be resolved.
+  if (pixelWidth >= .9) return .46;
+  // Irregular bubble films inside larger torn rafts, filtered before they
+  // become subpixel. The density field carries their coverage downstream.
+  vec2 cell = floor(p), local = fract(p);
+  float first = 8.0, second = 8.0;
+  for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++) {
+    vec2 offset = vec2(float(x), float(y));
+    vec2 jitter = vec2(hash(cell + offset), hash(cell + offset + 37.2));
+    vec2 delta = offset + .15 + jitter * .7 - local;
+    float d = dot(delta, delta);
+    second = min(second, max(first, d)); first = min(first, d);
+  }
+  float edge = sqrt(second) - sqrt(first);
+  float film = 1.0 - smoothstep(.035, .13 + pixelWidth, edge);
+  return mix(film, .46, smoothstep(.25, .9, pixelWidth));
+}
 vec2 windDirection(vec2 direction) {
   vec2 w = normalize(oceanWindDirection);
   return normalize(vec2(direction.x*w.x-direction.y*w.y, direction.x*w.y+direction.y*w.x));
@@ -205,13 +224,20 @@ void main() {
   // World-anchored cells break up the trail without swimming with the camera.
   float density = wake.r * objectFoamEnabled;
   float aeration = wake.g * objectFoamEnabled;
-  float cells = 0.0, foam = 0.0;
+  float foam = 0.0;
   if (density > .004) {
-    vec2 p = point * 76.0 + vec2(sin(time*.5), cos(time*.4)) * .2;
-    cells = noise(p) * .58 + noise(p * 2.13 + 7.0) * .29 + noise(p * 4.21) * .13;
-    float holes = smoothstep(.30, .66, cells);
-    foam = smoothstep(.10, .78, density) * mix(1.0, mix(.13, 1.0, holes), foamMottleEnabled);
-    foam *= mix(1.0, mix(.4, 1.0, noise(point * 25.0)), foamMottleEnabled);
+    vec2 q = point - wake.ba * .9;
+    vec2 warp = vec2(noise(q * 19.0 + time * .035), noise(q * 17.0 + 31.0 - time * .027));
+    q += (warp - .5) * .024;
+    float raft = noise(q * 37.0) * .65 + noise(q * 91.0 + 9.0) * .35;
+    float coverage = smoothstep(raft - .18, raft + .18, density * 1.1);
+    float films = foamFilm(q * 230.0, footprint * 230.0);
+    // Preserve translucent microbubbles at low speed; dense texels must not
+    // saturate into an opaque white stamp. Finer films dissolve into coverage.
+    // Keep sparse crest foam readable: applying density to both the coverage
+    // mask and very dark films used to suppress these thin side trails twice.
+    float bubbles = (.30 + .70 * coverage) * (.55 + .45 * films);
+    foam = clamp(density * 1.6, 0.0, .82) * mix(.7, bubbles, foamMottleEnabled);
   }
   float steepness = length(macroNormal.xz);
   float whitecaps = smoothstep(.19, .36, steepness) *
@@ -238,7 +264,7 @@ void main() {
     float crest = smoothstep(-.03, .08, oceanElevation);
     transmitted += vec3(.001, .016, .014) * crest *
       pow(max(dot(v, -l), 0.0), 2.0);
-    transmitted = mix(transmitted, vec3(.015, .17, .16), aeration * .48);
+    transmitted = mix(transmitted, vec3(.025, .13, .13), aeration * .48);
   } else {
     vec3 refracted = refract(-v, normal, IOR_AIR / IOR_WATER);
     transmitted = getSurfaceRayColor(pos, refracted, abovewaterColor);

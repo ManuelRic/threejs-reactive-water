@@ -4,6 +4,7 @@ precision highp int;
 uniform sampler2D foamTexture;
 uniform sampler2D waterTexture;
 uniform sampler2D wakeSourceTexture;
+uniform sampler2D kelvinTexture;
 uniform vec2 delta;
 uniform vec2 waterDelta;
 uniform vec2 waterSize;
@@ -21,6 +22,13 @@ float hash12(vec2 point) {
   return fract(sin(dot(point, vec2(127.1, 311.7))) * 43758.5453123);
 }
 
+float smoothNoise(vec2 p) {
+  vec2 cell = floor(p), f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash12(cell), hash12(cell + vec2(1, 0)), f.x),
+    mix(hash12(cell + vec2(0, 1)), hash12(cell + vec2(1, 1)), f.x), f.y);
+}
+
 vec2 sampleFlow(vec2 uv) {
   return texture2D(foamTexture, clamp(uv, 0.0, 1.0)).ba;
 }
@@ -29,6 +37,7 @@ void main() {
   vec4 previous = texture2D(foamTexture, coord);
   vec4 source = texture2D(wakeSourceTexture, coord);
   vec4 water = texture2D(waterTexture, coord);
+  vec4 kelvin = texture2D(kelvinTexture, coord);
 
   float leftHeight = texture2D(waterTexture, coord - vec2(waterDelta.x, 0.0)).r;
   float rightHeight = texture2D(waterTexture, coord + vec2(waterDelta.x, 0.0)).r;
@@ -53,6 +62,12 @@ void main() {
   );
   float flowResponse = 1.0 - exp(-timeStep * 3.2);
   vec2 predictedFlow = mix(previous.ba, surfaceFlow, flowResponse);
+  // A smooth divergence-free eddy field gently separates the propeller wash
+  // into patches. It is confined to aerated water, never the whole ocean.
+  vec2 p = (coord - .5) * waterSize;
+  vec2 eddy = vec2(sin(p.x * 39.0 + time * .65) * cos(p.y * 39.0 - time * .47),
+    -cos(p.x * 39.0 + time * .65) * sin(p.y * 39.0 - time * .47));
+  predictedFlow += eddy * previous.g * turbulenceIntensity * timeStep * .035;
   // Foam is left in the water; it does not shoot backwards at vessel speed.
   float sourceFlowSpeed = 0.015 + source.a * 0.06 * turbulenceIntensity;
   predictedFlow = mix(
@@ -90,17 +105,29 @@ void main() {
   );
   breaking *= smoothstep(-0.012, 0.018, water.r + curvature * 0.7);
 
-  float cellNoise = hash12(
-    floor(coord / delta) + floor(time * 2.4) * vec2(13.0, 7.0)
-  );
+  // Side foam follows the actual propagating, interfering Kelvin crests.
+  // A crest must be positive in both the full surface and its divergent part;
+  // the envelope alone must never paint foam in troughs or ahead of the bow.
+  float crestCoherence = smoothstep(.24, .72, kelvin.a / max(kelvin.b, .000001));
+  float sideSteepness = sqrt(max(0.0, kelvin.a) * max(0.0, kelvin.g));
+  float sideBreaking = crestCoherence * smoothstep(.00001, .00012, kelvin.r) *
+    smoothstep(foamGenerationThreshold * .06, foamGenerationThreshold * .9, sideSteepness);
+  // Continuous world-space noise avoids grid-aligned speckle and flicker.
+  float lace = smoothstep(.26, .72, smoothNoise(p * 43.0) * .65 + smoothNoise(p * 97.0) * .35);
+  sideBreaking *= .28 + .72 * lace;
+
+  float cellNoise = hash12(floor(coord / delta));
   float decayVariation = mix(0.70, 1.32, cellNoise);
   float lifetimeScale = 8.0 / max(farWakeLifetime, 1.0);
   density *= exp(-foamDecay * lifetimeScale * decayVariation * timeStep);
-  aeration *= exp(-foamDecay * lifetimeScale * 1.38 * timeStep);
+  aeration *= exp(-foamDecay * lifetimeScale * .6 * timeStep);
 
-  float crestGeneration = breaking * timeStep * (0.72 + turbulenceIntensity * 0.42);
+  float crestGeneration = 1.0 - exp(-timeStep * breaking * (0.72 + turbulenceIntensity * 0.42));
   density += (1.0 - density) * crestGeneration;
-  aeration += (1.0 - aeration) * breaking * timeStep * 0.55;
+  // Side-wave aeration has limited coverage. Repeated crests in a tight turn
+  // must not fill the whole wake with an opaque white sheet.
+  density += max(0.0, .10 - density) * (1.0 - exp(-timeStep * sideBreaking * .85));
+  aeration += (1.0 - aeration) * (1.0 - exp(-timeStep * (breaking * .55 + sideBreaking * .12)));
 
   float sourceDensity = source.r * (0.72 + source.a * 0.28);
   float sourceResponse = 1.0 - exp(-timeStep * 8.5);

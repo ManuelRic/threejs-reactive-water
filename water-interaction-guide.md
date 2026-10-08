@@ -25,6 +25,11 @@ La interacción tiene dos vías:
   La estela emplea un espectro direccional finito con dispersión de aguas profundas:
   `omega² = g*k`, `omega/k = U*cos(theta)`, velocidad de grupo igual a la mitad de
   la velocidad de fase. Los barcos NO inyectan presión en el solver radial.
+  Un campo cercano ligado a la proa añade una elevación y un valle suaves según
+  manga, calado y velocidad al cuadrado. Mantiene el desplazamiento a 1–4 kn,
+  cuando la onda gravitatoria libre es demasiado corta para la malla. Este campo
+  es una aproximación visual localizada, no una estela gravitatoria de longitud
+  de onda inventada; al parar se relaja, sin dejar nuevas fuentes permanentes.
   Solo se emiten paquetes y espuma mientras hay traslación horizontal medida
   por encima de `minWakeSpeed`. Rotación, balanceo o velocidad residual no activan
   una estela de navegación. La corriente media se considera cero en esta demo.
@@ -51,6 +56,16 @@ histórica, que continúa en su rumbo original aunque el barco gire. Este recort
 es una aproximación visual de campo lejano, no una solución exacta de campo cercano.
 La calidad filtra ondas no resueltas sin cambiar la anchura física de los paquetes.
 
+La espuma lateral se genera en la GPU a partir de las crestas y la curvatura
+de los mismos paquetes divergentes que desplazan el agua. Sus contribuciones
+se suman antes de detectar crestas; los valles y las ondas que se cancelan no
+producen espuma nueva. Los canales libres de la textura de estela transportan
+esta información sin añadir un pase de render. La cobertura lateral se limita
+al 10 % y queda en el campo de espuma, donde se transporta y disipa incluso
+después de un giro o una parada. Las fuentes locales de popa/hélices conservan
+su turbulencia propia. Es una aproximación visual de aireación, no un solver
+físico de rotura de olas; a baja velocidad no fuerza espuma sobre ondas no resueltas.
+
 ## Registrar modelos
 
 Después de cargar el laboratorio, añade un Object3D a `waterLab.scene` y registra
@@ -67,7 +82,7 @@ const handle = waterLab.registerWaterInteractor({
   maxWakeLength: 0.6,
   maxWakeBeam: 0.18,
   sampleCount: 900,
-  minWakeSpeed: 0.006,
+  minWakeSpeed: 0.001, // ~0,08 kn; valor inicial de los barcos.
   contactStrength: 1,
   wakeStrength: 1,
   motorWake: true,
@@ -137,13 +152,21 @@ La calidad Medium es el ajuste inicial. WebGL2 se solicita explícitamente, con
 fallback a WebGL1 cuando el navegador no lo admite. Las sombras del escenario de
 piscina y sus cáusticas no se recalculan en el modo profundo por defecto.
 
-La malla de agua escala con Low/Medium/Ultra: 96/160/256 segmentos por lado,
+La malla de agua escala con Low/Medium/Ultra: 96/192/256 segmentos por lado,
 frente a 364 en todos los ajustes anteriores. Anillos cosidos de resolución
 decreciente extienden la superficie hasta el horizonte en la misma llamada de
 dibujo. El dominio reactivo sigue siendo el parche central de 7 × 7 unidades:
 los anillos exteriores son visuales, no una ampliación del solver. Los paquetes usan una llamada
-instanciada. El solver radial se omite cuando no hay perturbaciones locales.
-La flotación del barco usa alturas analíticas sin readback GPU por frame; la
+instanciada, compartida por el campo cercano (hasta 16 cascos) a 384 px.
+Medium usa también 384 px para la espuma. El solver radial se omite cuando no hay
+perturbaciones locales.
+La flotación del carguero ajusta un plano a 15 muestras de su línea de flotación,
+con los mismos parámetros, fases, LOD y desplazamiento horizontal que el shader.
+El plano sigue elevación, cabeceo y balanceo mediante resortes amortiguados;
+filtra el oleaje más corto que el casco sin eliminar el movimiento en mar moderado.
+El campo cercano propio no se usa como fuerza de autoflotación. No se implementa
+un solver naval de fuerzas, masa y momentos. Las alturas son analíticas, sin
+readback GPU por frame; la
 esfera visible consulta el campo local a 15 Hz. El API explícito `sampleHeights`
 sigue siendo síncrono: no consultarlo para cada objeto y frame.
 
@@ -176,8 +199,13 @@ filtrado anisotrópico. La textura de normales procede de los ejemplos de Three.
 véase `images/textures/THIRD_PARTY.md`.
 
 La espuma usa cobertura irregular y agua aireada bajo la superficie, con una
-fuente localizada de popa y hélices; pequeñas fuentes de proa representan rotura
-local. No se dibujan brazos blancos continuos de una V. El campo persistente
+fuente localizada de popa y hélices; la proa solo produce una pequeña cantidad de
+espuma a velocidades mayores, independiente de su desplazamiento del agua.
+Las fuentes usan velocidad medida y número de Froude: queda un lavado tenue a
+pocos nudos. La cobertura translúcida combina parches irregulares y películas de
+burbujas filtradas por tamaño de píxel; los remolinos separan la espuma y el agua
+aireada persiste más que su parte blanca. No se dibujan brazos blancos continuos
+de una V. El campo persistente
 construye la estela al avanzar el barco y la transporta con una corriente residual
 débil. `Near wake length` cambia la longitud de estas fuentes, no pinta una banda
 de espuma de varios cascos. La
@@ -195,12 +223,19 @@ También verifica dispersión, velocidad de grupo, cuña de Kelvin, parada,
 direcciones históricas, filtrado por casco/resolución, energía direccional y
 presupuesto/límites/materiales/texturas del modelo optimizado. Incluye regresiones
 de crestas/valles, estabilidad al variar la cadencia, fuentes locales de espuma
-y ausencia de espuma de navegación en reposo.
+y ausencia de espuma de navegación en reposo. Comprueba además desplazamiento
+a baja velocidad, bordes suaves del campo cercano, ejes correctos de cabeceo y
+balanceo, ausencia de balanceo artificial en agua plana y estabilidad a 30/60/120 Hz.
 `npm run check` valida sintaxis JavaScript. Las comprobaciones numéricas no
 certifican exactitud naval ni rendimiento de la GPU.
 
-Con el servidor local abierto, `/tests/wake-gpu.html` compara 20.480 muestras
-de altura CPU/GPU en cinco casos: crucero, lento, rápido, rotado y giro.
+Con el servidor local abierto, `/tests/wake-gpu.html` compara 32.768 muestras
+de altura CPU/GPU en ocho casos: crucero, lento, rápido, rotado, giro y proas a
+1 y 3 kn, incluyendo giro a 3 kn. También ejecuta el shader real de espuma:
+crestas frente a valles, interferencia destructiva, límites de cobertura,
+estabilidad a 30/60/120 Hz, estelas rectas/curvas y disipación tras parar.
+`/tests/ocean-gpu.html` compara otras 8.192 muestras del desplazamiento
+de oleaje entre CPU y el shader de producción en modos Gerstner y espectral.
 Comprueba también que el campo GPU quede vacío al expirar todos los paquetes.
 Muestra el coste mediano de actualizar y completar el pase de estela aislado a
 256 px, incluida la sincronización CPU/GPU: no equivale a FPS de la escena.

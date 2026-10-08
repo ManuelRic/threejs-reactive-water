@@ -1,0 +1,46 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Ocean buoyancy GPU regression</title>
+<style>body{background:#10202c;color:#dcebf4;font:16px monospace;padding:24px;white-space:pre-wrap}</style>
+<h1>Ocean buoyancy GPU regression</h1>
+<pre id="result">Checking the production vertex wave functions...</pre>
+<script src="../node_modules/three/build/three.min.js"></script>
+<script src="../ocean-surface.js"></script>
+<script>
+(async function () {
+  const output = document.getElementById('result');
+  try {
+    const shader = await (await fetch('../shaders/water/vertex.glsl')).text();
+    const uniformsSource = shader.slice(0, shader.indexOf('attribute float oceanSpacing;'));
+    const wavesSource = shader.slice(shader.indexOf('vec3 tangentX;'), shader.indexOf('void main()'));
+    const renderer = new THREE.WebGLRenderer();
+    const target = new THREE.WebGLRenderTarget(64,64,{type:THREE.FloatType,depthBuffer:false});
+    const material = new THREE.RawShaderMaterial({
+      uniforms: { oceanSpacing:{value:7/192}, oceanWaveStrength:{value:.063},
+        oceanWaveFrequency:{value:.8}, oceanWaveSpeed:{value:1}, oceanWaveSharpness:{value:1.05},
+        oceanWindDirection:{value:new THREE.Vector2(Math.cos(.48),Math.sin(.48))},
+        oceanWindSpeed:{value:15}, oceanChoppiness:{value:1.25}, fftWavesEnabled:{value:1}, time:{value:4} },
+      vertexShader:'precision highp float; attribute vec3 position; varying vec2 point; void main(){point=position.xy;gl_Position=vec4(position,1);}',
+      fragmentShader:'precision highp float; varying vec2 point; uniform float oceanSpacing;\n'+uniformsSource+wavesSource+
+        'void main(){tangentX=vec3(0);tangentZ=vec3(0);gl_FragColor=vec4(oceanDisplacement(point),1);}',
+    });
+    const mesh=new THREE.Mesh(new THREE.PlaneBufferGeometry(2,2),material), camera=new THREE.Camera();
+    const pixels=new Float32Array(64*64*4), results=[];
+    for (const spectral of [false,true]) {
+      material.uniforms.fftWavesEnabled.value=spectral?1:0;
+      const sampler=OceanSurface.sampler({spectral,strength:.063,frequency:.8,speed:1,sharpness:1.05,
+        choppiness:1.25,windDirection:.48,windSpeed:15,spacing:7/192,time:4});
+      renderer.setRenderTarget(target); renderer.render(mesh,camera);
+      renderer.readRenderTargetPixels(target,0,0,64,64,pixels);
+      let maxError=0;
+      for(let y=0;y<64;y++)for(let x=0;x<64;x++){
+        const cpu=sampler.displacement((x+.5)/32-1,(y+.5)/32-1), i=(y*64+x)*4;
+        maxError=Math.max(maxError,Math.abs(cpu.x-pixels[i]),Math.abs(cpu.y-pixels[i+1]),Math.abs(cpu.z-pixels[i+2]));
+      }
+      if(!Number.isFinite(maxError)||maxError>1e-5)throw Error('Ocean mismatch: '+maxError);
+      results.push((spectral?'Spectral':'Gerstner')+': 4096 points, maximum error '+maxError.toExponential(3));
+    }
+    output.textContent='PASS: CPU buoyancy matches the production ocean displacement\n'+results.join('\n');
+  } catch(error) { output.textContent='FAIL: '+error.message; }
+})();
+</script>

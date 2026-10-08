@@ -158,9 +158,6 @@ void main() {
   vec4 worldPosition = modelMatrix * vec4(position.x, 0.0, position.y, 1.0);
   vec2 worldPoint = worldPosition.xz;
 
-  waterUv = worldPoint / waterSize + 0.5;
-  float localMask = step(0.0, waterUv.x) * step(waterUv.x, 1.0) * step(0.0, waterUv.y) * step(waterUv.y, 1.0);
-  vec4 info = texture2D(water, waterUv) * localMask;
   pos = worldPosition.xyz;
   tangentX = vec3(0.0);
   tangentZ = vec3(0.0);
@@ -171,6 +168,10 @@ void main() {
   oceanSurfaceNormal = normalize(cross(tangentZ, tangentX));
   oceanElevation = ocean.y;
   pos.xz += ocean.xz;
+  // Hull wake/foam live in world coordinates, after horizontal wave motion.
+  waterUv = pos.xz / waterSize + .5;
+  float localMask = step(0.0, waterUv.x) * step(waterUv.x, 1.0) * step(0.0, waterUv.y) * step(waterUv.y, 1.0);
+  vec4 info = texture2D(water, waterUv) * localMask;
   pos.y += ocean.y + info.r * wakeWaveStrength * waterTextureEnabled;
   pos.y += texture2D(kelvinTexture, waterUv).r * waterTextureEnabled * localMask;
   waterWaveUv = pos.xz / waterSize + 0.5;

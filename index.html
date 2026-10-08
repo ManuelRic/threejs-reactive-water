@@ -2,11 +2,10 @@
 <html>
   <head>
     <meta charset="utf-8">
-    <title>ThreeJS Water</title>
+    <title>Water Lab — Ocean Simulation</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <link rel="icon" href="data:,">
 
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bulma@0.8.0/css/bulma.min.css">
     <link rel="stylesheet" href="styles.css">
 
     <script src="node_modules/three/build/three.min.js"></script>
@@ -16,6 +15,8 @@
     <script src="kelvin-renderer.js"></script>
     <script src="wake-foam.js"></script>
     <script src="ocean-grid.js"></script>
+    <script src="ocean-surface.js"></script>
+    <script src="vessel-motion.js"></script>
   </head>
 
   <body>
@@ -25,24 +26,35 @@
       </section>
 
       <button id="controls-toggle" class="controls-toggle" type="button" aria-controls="controls-panel" aria-expanded="true" aria-label="Toggle controls">
-        <span class="controls-toggle-line"></span>
-        <span class="controls-toggle-line"></span>
-        <span class="controls-toggle-line"></span>
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 7h16M4 17h16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="9" cy="7" r="2.5"/><circle cx="15" cy="17" r="2.5"/></svg>
+        <span>Controls</span>
       </button>
       <button id="controls-backdrop" class="controls-backdrop" type="button" aria-label="Close controls"></button>
 
       <section id="controls-panel" class="controls-panel" aria-label="Simulation controls">
         <div class="controls-panel-header">
           <div>
-            <p>Water lab</p>
+            <p><span class="status-dot" aria-hidden="true"></span>Simulation workspace</p>
             <h1>Simulation controls</h1>
           </div>
-          <button id="controls-close" class="controls-close" type="button" aria-label="Close controls">&times;</button>
+          <button id="controls-close" class="controls-close" type="button" aria-label="Close controls"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
         </div>
 
-        <div class="control-group">
+        <div class="simulation-status">
+          <div class="fps-status"><output id="diagnostic-fps">--</output><span>FPS</span></div>
+          <div class="vessel-status"><span>Vessel motion</span><output id="diagnostic-vessel">--</output></div>
+        </div>
+        <nav class="control-tabs" role="tablist" aria-label="Control categories">
+          <button id="tab-vessel" type="button" role="tab" aria-selected="true" aria-controls="controls-content" data-control-tab="vessel">Vessel</button>
+          <button id="tab-ocean" type="button" role="tab" aria-selected="false" aria-controls="controls-content" data-control-tab="ocean" tabindex="-1">Ocean</button>
+          <button id="tab-wake" type="button" role="tab" aria-selected="false" aria-controls="controls-content" data-control-tab="wake" tabindex="-1">Wake</button>
+          <button id="tab-settings" type="button" role="tab" aria-selected="false" aria-controls="controls-content" data-control-tab="settings" tabindex="-1">Settings</button>
+        </nav>
+        <div id="controls-content" class="controls-content" role="tabpanel" aria-labelledby="tab-vessel" tabindex="0">
+
+        <div class="control-group" data-control-category="settings" hidden>
           <div class="control-group-header">
-            <h2>Quality and diagnostics</h2>
+            <h2>Performance</h2>
           </div>
           <div class="button-row button-row-three">
             <button id="quality-low" class="button is-small is-light" type="button">Low</button>
@@ -62,8 +74,9 @@
               <option value="source">Hull source impulses</option>
             </select>
           </div>
-          <div class="diagnostics-grid" aria-live="polite">
-            <span>FPS</span><output id="diagnostic-fps">--</output>
+          <details class="diagnostics-details">
+          <summary>Detailed diagnostics</summary>
+          <div class="diagnostics-grid">
             <span>Frame pacing</span><output id="diagnostic-pacing">--</output>
             <span>CPU</span><output id="diagnostic-cpu">-- ms</output>
             <span>CPU split</span><output id="diagnostic-stages">--</output>
@@ -72,9 +85,10 @@
             <span>Renderer</span><output id="diagnostic-renderer">--</output>
             <span>Interaction</span><output id="diagnostic-interaction">--</output>
           </div>
+          </details>
         </div>
 
-        <div class="control-group control-group-objects">
+        <div class="control-group control-group-objects" data-control-category="vessel">
           <div class="control-group-header">
             <h2>Scene objects</h2>
           </div>
@@ -87,11 +101,11 @@
           </div>
         </div>
 
-        <div class="control-group">
+        <div class="control-group" data-control-category="vessel">
           <div class="control-group-header">
-            <h2>Ship motion</h2>
+            <h2>Navigation</h2>
           </div>
-          <div class="button-row">
+          <div class="button-row motion-modes">
             <button id="ship-mode-straight" class="button is-small is-light" type="button">Straight</button>
             <button id="ship-mode-random" class="button is-small is-info" type="button">Random</button>
             <button id="ship-mode-circle" class="button is-small is-light" type="button">Circle</button>
@@ -111,7 +125,7 @@
           </div>
         </div>
 
-        <div class="control-group">
+        <div class="control-group" data-control-category="vessel">
           <div class="control-group-header">
             <h2>Sphere physics</h2>
           </div>
@@ -123,7 +137,7 @@
           </div>
         </div>
 
-        <div class="control-group">
+        <div class="control-group" data-control-category="ocean" hidden>
           <div class="control-group-header">
             <h2>Water motion</h2>
           </div>
@@ -174,10 +188,10 @@
           </div>
         </div>
 
-        <div class="control-group">
-          <div class="control-group-header">
+        <details class="control-group" data-control-category="ocean" hidden>
+          <summary class="control-group-header">
             <h2>Wave generator</h2>
-          </div>
+          </summary>
           <div class="button-row">
             <button id="toggle-wave-generator" class="button is-small is-light" type="button">Wave generator</button>
           </div>
@@ -203,9 +217,9 @@
               <input id="generator-z" class="slider is-fullwidth" type="range" min="-2" max="2" step="0.01" value="-1.65">
             </div>
           </div>
-        </div>
+        </details>
 
-        <div class="control-group">
+        <div class="control-group" data-control-category="wake" hidden>
           <div class="control-group-header">
             <h2>Wake</h2>
           </div>
@@ -235,7 +249,7 @@
           </div>
         </div>
 
-        <div class="control-group">
+        <div class="control-group" data-control-category="settings" hidden>
           <div class="control-group-header">
             <h2>Dynamic solver</h2>
           </div>
@@ -270,8 +284,8 @@
               <input id="foam-threshold" class="slider is-fullwidth" type="range" min="0.001" max="0.04" step="0.001" value="0.009">
             </div>
             <div class="range-control">
-              <label for="foam-decay"><span>Foam decay</span><input id="foam-decay-value" class="value-input" type="number" min="0.05" max="1.5" step="0.01" value="0.34"></label>
-              <input id="foam-decay" class="slider is-fullwidth" type="range" min="0.05" max="1.5" step="0.01" value="0.34">
+              <label for="foam-decay"><span>Foam decay</span><input id="foam-decay-value" class="value-input" type="number" min="0.05" max="1.5" step="0.01" value="0.48"></label>
+              <input id="foam-decay" class="slider is-fullwidth" type="range" min="0.05" max="1.5" step="0.01" value="0.48">
             </div>
             <div class="range-control">
               <label for="foam-advection"><span>Foam advection</span><input id="foam-advection-value" class="value-input" type="number" min="0" max="2" step="0.01" value="0.72"></label>
@@ -300,7 +314,7 @@
           </div>
         </div>
 
-        <div class="control-group">
+        <div class="control-group" data-control-category="settings" hidden>
           <div class="control-group-header">
             <h2>Render</h2>
           </div>
@@ -341,8 +355,11 @@
             <button id="toggle-wireframe" class="button is-small is-light" type="button">Wireframe</button>
           </div>
         </div>
+        </div>
+        <footer class="controls-footer"><span class="footer-wave" aria-hidden="true">≈</span> Shape the water. Explore the motion.</footer>
       </section>
     </main>
+    <script src="controls-ui.js"></script>
     <script type="text/javascript" src="index.js"></script>
   </body>
 </html>
